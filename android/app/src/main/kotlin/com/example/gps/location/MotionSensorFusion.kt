@@ -21,6 +21,9 @@ data class MotionFusionState(
     val rotationSensorAvailable: Boolean = false,
     val linearAccelerationAvailable: Boolean = false,
     val gyroscopeAvailable: Boolean = false,
+    val maneuverEvent: String? = null,
+    val maneuverEventSequence: Long = 0L,
+    val rejectedSpikeCount: Int = 0,
 )
 
 class MotionSensorFusion(
@@ -50,6 +53,17 @@ class MotionSensorFusion(
     private var mountingOffsetDegrees: Float? = null
     private var lastPublishElapsed = 0L
 
+    private var straightCalibrationSinceElapsed = 0L
+    private var calibrationSamples = 0
+
+    private var motionCandidate = ""
+    private var motionCandidateSinceElapsed = 0L
+    private var confirmedMotion = ""
+    private var lastConfirmedEventElapsed = 0L
+
+    private var lastAcceptedRawLateral: Float? = null
+    private var lastAcceptedRawYaw: Float? = null
+
     fun start() {
         if (started) return
         started = true
@@ -70,6 +84,7 @@ class MotionSensorFusion(
         this.speedMps = speedMps ?: 0f
         calibrateMountingOffsetIfPossible()
         updateDerivedHeading()
+        updateMotionState()
         publish()
     }
 
@@ -79,7 +94,7 @@ class MotionSensorFusion(
                 SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
                 hasRotation = true
                 SensorManager.getOrientation(rotationMatrix, orientation)
-                val heading = normalize360((orientation[0] * 180f / PI.toFloat()))
+                val heading = normalize360(orientation[0] * 180f / PI.toFloat())
                 state = state.copy(sensorHeadingDegrees = heading)
                 calibrateMountingOffsetIfPossible()
                 updateDerivedHeading()
@@ -88,6 +103,7 @@ class MotionSensorFusion(
             Sensor.TYPE_LINEAR_ACCELERATION -> updateLateralAcceleration(event.values)
             Sensor.TYPE_GYROSCOPE -> updateYawRate(event.values)
         }
+        updateMotionState()
         publish()
     }
 
@@ -96,11 +112,33 @@ class MotionSensorFusion(
     private fun calibrateMountingOffsetIfPossible() {
         val deviceHeading = state.sensorHeadingDegrees ?: return
         val gnssHeading = gnssBearingDegrees ?: return
-        if (speedMps < 4f) return
+        val yaw = abs(state.yawRateDegS ?: 0f)
+        val lateral = abs(state.lateralAccelerationMps2 ?: 0f)
+        val now = SystemClock.elapsedRealtime()
+
+        val straightEnough = speedMps >= 5f && yaw <= 4f && lateral <= 0.45f
+        if (!straightEnough) {
+            straightCalibrationSinceElapsed = 0L
+            if (!state.sensorFrameCalibrated) calibrationSamples = 0
+            return
+        }
+
+        if (straightCalibrationSinceElapsed == 0L) {
+            straightCalibrationSinceElapsed = now
+            return
+        }
+        if (now - straightCalibrationSinceElapsed < 1500L) return
 
         val targetOffset = normalizeSigned(gnssHeading - deviceHeading)
-        mountingOffsetDegrees = blendSignedAngle(mountingOffsetDegrees, targetOffset, 0.06f)
-        state = state.copy(sensorFrameCalibrated = true)
+        val alpha = if (state.sensorFrameCalibrated) 0.02f else 0.12f
+        mountingOffsetDegrees = blendSignedAngle(mountingOffsetDegrees, targetOffset, alpha)
+
+        if (!state.sensorFrameCalibrated) {
+            calibrationSamples++
+            if (calibrationSamples >= 5) {
+                state = state.copy(sensorFrameCalibrated = true)
+            }
+        }
     }
 
     private fun updateDerivedHeading() {
@@ -119,37 +157,89 @@ class MotionSensorFusion(
         val world = toWorld(values)
         val heading = state.fusedHeadingDegrees ?: gnssBearingDegrees ?: return
         val radians = heading * PI.toFloat() / 180f
+        val raw = world[0] * cos(radians) - world[1] * sin(radians)
 
-        // Android world frame: X roughly east, Y roughly north. Project acceleration
-        // onto the vehicle's right-hand axis using the best heading currently available.
-        val lateralRight = world[0] * cos(radians) - world[1] * sin(radians)
-        val filtered = ema(state.lateralAccelerationMps2, lateralRight, 0.18f)
-        state = state.copy(
-            lateralAccelerationMps2 = filtered,
-            motionHint = classifyMotion(filtered, state.yawRateDegS),
-        )
+        if (abs(raw) > 7.0f || lastAcceptedRawLateral?.let { abs(raw - it) > 5.0f } == true) {
+            state = state.copy(rejectedSpikeCount = state.rejectedSpikeCount + 1)
+            return
+        }
+
+        lastAcceptedRawLateral = raw
+        val bounded = raw.coerceIn(-4.0f, 4.0f)
+        val filtered = ema(state.lateralAccelerationMps2, bounded, 0.08f)
+        state = state.copy(lateralAccelerationMps2 = filtered)
     }
 
     private fun updateYawRate(values: FloatArray) {
         if (!hasRotation || values.size < 3) return
         val world = toWorld(values)
-        val yawDegS = world[2] * 180f / PI.toFloat()
-        val filtered = ema(state.yawRateDegS, yawDegS, 0.20f)
-        state = state.copy(
-            yawRateDegS = filtered,
-            motionHint = classifyMotion(state.lateralAccelerationMps2, filtered),
-        )
+        val raw = world[2] * 180f / PI.toFloat()
+
+        if (abs(raw) > 120f || lastAcceptedRawYaw?.let { abs(raw - it) > 90f } == true) {
+            state = state.copy(rejectedSpikeCount = state.rejectedSpikeCount + 1)
+            return
+        }
+
+        lastAcceptedRawYaw = raw
+        val bounded = raw.coerceIn(-75f, 75f)
+        val filtered = ema(state.yawRateDegS, bounded, 0.10f)
+        state = state.copy(yawRateDegS = filtered)
     }
 
-    private fun classifyMotion(lateral: Float?, yaw: Float?): String {
-        if (speedMps < 2.5f) return "LOW SPEED"
+    private fun updateMotionState() {
+        val now = SystemClock.elapsedRealtime()
+        val instant = classifyInstantMotion(state.lateralAccelerationMps2, state.yawRateDegS)
+
+        if (instant == "LOW SPEED" || instant == "STABLE" || instant == "MINOR MOTION") {
+            motionCandidate = ""
+            motionCandidateSinceElapsed = 0L
+            confirmedMotion = ""
+            state = state.copy(motionHint = instant)
+            return
+        }
+
+        if (motionCandidate != instant) {
+            motionCandidate = instant
+            motionCandidateSinceElapsed = now
+            state = state.copy(motionHint = "VERIFYING")
+            return
+        }
+
+        val requiredDuration = when (instant) {
+            "TURN / CURVE" -> 500L
+            "LEFT LATERAL", "RIGHT LATERAL" -> 400L
+            else -> 500L
+        }
+        if (now - motionCandidateSinceElapsed < requiredDuration) {
+            state = state.copy(motionHint = "VERIFYING")
+            return
+        }
+
+        if (confirmedMotion != instant) {
+            confirmedMotion = instant
+            val eventAllowed = now - lastConfirmedEventElapsed >= 1800L
+            if (eventAllowed) {
+                lastConfirmedEventElapsed = now
+                state = state.copy(
+                    maneuverEvent = instant,
+                    maneuverEventSequence = state.maneuverEventSequence + 1L,
+                    motionHint = instant,
+                )
+                return
+            }
+        }
+        state = state.copy(motionHint = instant)
+    }
+
+    private fun classifyInstantMotion(lateral: Float?, yaw: Float?): String {
+        if (speedMps < 4.5f) return "LOW SPEED"
         val lat = lateral ?: 0f
         val yawRate = yaw ?: 0f
         return when {
-            abs(yawRate) >= 12f -> "TURN / CURVE"
-            lat >= 0.65f -> "RIGHT LATERAL"
-            lat <= -0.65f -> "LEFT LATERAL"
-            abs(lat) <= 0.35f && abs(yawRate) <= 5f -> "STABLE"
+            abs(yawRate) >= 8f -> "TURN / CURVE"
+            lat >= 0.55f && abs(yawRate) <= 8f -> "RIGHT LATERAL"
+            lat <= -0.55f && abs(yawRate) <= 8f -> "LEFT LATERAL"
+            abs(lat) <= 0.28f && abs(yawRate) <= 3.5f -> "STABLE"
             else -> "MINOR MOTION"
         }
     }
