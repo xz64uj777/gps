@@ -1,7 +1,12 @@
+import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Query
+
+from fastapi import FastAPI, HTTPException, Query
+
 from .db import pool
-from .models import CorridorResponse, LaneDto, LaneConnectionDto, LatLng
+from .models import CorridorResponse, LaneConnectionDto, LaneDto, LatLng
+from .osm_importer import import_corridor
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -9,18 +14,35 @@ async def lifespan(_: FastAPI):
     yield
     pool.close()
 
+
 app = FastAPI(
     title="Lane-Level GPS API",
-    version="0.1.0",
+    version="0.2.0",
     description="Self-hosted lane graph API for the lane-level GPS MVP.",
     lifespan=lifespan,
 )
+
 
 @app.get("/health")
 def health():
     with pool.connection() as conn:
         ok = conn.execute("SELECT 1").fetchone()[0] == 1
     return {"ok": ok}
+
+
+@app.post("/v1/dev/import-corridor")
+def dev_import_corridor(
+    lat: float = Query(..., ge=-90, le=90),
+    lon: float = Query(..., ge=-180, le=180),
+    radius_m: int = Query(1200, ge=100, le=5000),
+):
+    if os.getenv("LANE_GPS_DEV_IMPORT", "false").lower() not in {"1", "true", "yes"}:
+        raise HTTPException(status_code=404, detail="Dev OSM import is disabled")
+    try:
+        return import_corridor(lat, lon, radius_m, manage_pool=False)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"OSM import failed: {type(exc).__name__}") from exc
+
 
 @app.get("/v1/corridor", response_model=CorridorResponse)
 def corridor(
@@ -47,27 +69,37 @@ def corridor(
         lane_ids = [r[0] for r in rows]
         crows = []
         if lane_ids:
-            crows = conn.execute("""
-              SELECT from_lane_id::text, to_lane_id::text,
-                     movement::text, legal, confidence
-              FROM lane_connection
-              WHERE from_lane_id = ANY(%s::uuid[])
-            """, (lane_ids,)).fetchall()
+            crows = conn.execute(
+                """
+                SELECT from_lane_id::text, to_lane_id::text,
+                       movement::text, legal, confidence
+                FROM lane_connection
+                WHERE from_lane_id = ANY(%s::uuid[])
+                """,
+                (lane_ids,),
+            ).fetchall()
 
     lanes = [
         LaneDto(
-            id=r[0], road_segment_id=r[1], lane_index=r[2],
+            id=r[0],
+            road_segment_id=r[1],
+            lane_index=r[2],
             centerline=[LatLng(lat=c[1], lon=c[0]) for c in r[3]["coordinates"]],
             estimated_width_m=r[4],
             allowed_movements=[str(x) for x in r[5]],
-            change_left=r[6], change_right=r[7], source_confidence=r[8],
+            change_left=r[6],
+            change_right=r[7],
+            source_confidence=r[8],
         )
         for r in rows
     ]
     connections = [
         LaneConnectionDto(
-            from_lane_id=r[0], to_lane_id=r[1], movement=r[2],
-            legal=r[3], confidence=r[4]
+            from_lane_id=r[0],
+            to_lane_id=r[1],
+            movement=r[2],
+            legal=r[3],
+            confidence=r[4],
         )
         for r in crows
     ]
