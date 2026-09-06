@@ -7,8 +7,14 @@ class LaneMatcher(
     private val exactLaneThreshold: Double = 0.70,
     private val highConfidenceThreshold: Double = 0.85,
     private val maxExactLaneAccuracyMeters: Double = 5.0,
+    private val laneChangeConfirmationFixes: Int = 3,
+    private val exactLaneStableFixes: Int = 3,
 ) {
     private var previous: LaneEstimate? = null
+    private var lastObservationTimestamp: Long? = null
+    private var pendingLaneId: String? = null
+    private var pendingLaneFixes: Int = 0
+    private var stableLaneFixes: Int = 0
 
     data class Weights(
         val distance: Double = 2.5,
@@ -25,6 +31,10 @@ class LaneMatcher(
         weights: Weights = Weights(),
     ): LaneEstimate {
         if (candidates.isEmpty()) {
+            pendingLaneId = null
+            pendingLaneFixes = 0
+            stableLaneFixes = 0
+            lastObservationTimestamp = observation.timestampMillis
             return LaneEstimate(null, 0.0, emptyList(), false).also { previous = it }
         }
 
@@ -61,24 +71,64 @@ class LaneMatcher(
             LaneProbability(it.key, it.value / total)
         }.sortedByDescending { it.probability }
 
-        val top = probabilities.first()
-        val runner = probabilities.getOrNull(1)?.probability ?: 0.0
-        val separation = (top.probability - runner).coerceIn(0.0, 1.0)
+        val rawTop = probabilities.first()
+        val isDistinctFix = observation.timestampMillis != lastObservationTimestamp
+        val previousStillCandidate = prevLane != null && candidates.any { it.id == prevLane }
+
+        var selectedLaneId = rawTop.laneId
+        var transitionPending = false
+
+        if (prevLane != null && rawTop.laneId != prevLane && previousStillCandidate) {
+            if (isDistinctFix) {
+                if (pendingLaneId == rawTop.laneId) {
+                    pendingLaneFixes++
+                } else {
+                    pendingLaneId = rawTop.laneId
+                    pendingLaneFixes = 1
+                }
+            }
+
+            if (pendingLaneFixes < laneChangeConfirmationFixes) {
+                selectedLaneId = prevLane
+                transitionPending = true
+            } else {
+                selectedLaneId = rawTop.laneId
+                pendingLaneId = null
+                pendingLaneFixes = 0
+            }
+        } else {
+            pendingLaneId = null
+            pendingLaneFixes = 0
+        }
+
+        if (isDistinctFix) {
+            stableLaneFixes = if (selectedLaneId == prevLane) stableLaneFixes + 1 else 1
+            lastObservationTimestamp = observation.timestampMillis
+        }
+
+        val selectedProbability = probabilities.firstOrNull { it.laneId == selectedLaneId }?.probability ?: 0.0
+        val runner = probabilities
+            .asSequence()
+            .filter { it.laneId != selectedLaneId }
+            .map { it.probability }
+            .maxOrNull() ?: 0.0
+        val separation = (selectedProbability - runner).coerceIn(0.0, 1.0)
         val gpsQuality =
             (1.0 - observation.horizontalAccuracyMeters / 25.0).coerceIn(0.15, 1.0)
         val confidence =
-            (0.65 * top.probability + 0.25 * separation + 0.10 * gpsQuality)
+            (0.65 * selectedProbability + 0.25 * separation + 0.10 * gpsQuality)
                 .coerceIn(0.0, 1.0)
 
-        // A single candidate must never turn a poor GNSS fix into a confident
-        // exact-lane claim. The probability estimate remains useful, but the UI
-        // must show uncertainty until horizontal accuracy is lane-scale again.
         val accuracyAllowsExactLane =
             observation.horizontalAccuracyMeters <= maxExactLaneAccuracyMeters
-        val exactLane = confidence >= exactLaneThreshold && accuracyAllowsExactLane
+        val exactLane =
+            confidence >= exactLaneThreshold &&
+                accuracyAllowsExactLane &&
+                stableLaneFixes >= exactLaneStableFixes &&
+                !transitionPending
 
         return LaneEstimate(
-            mostLikelyLaneId = top.laneId,
+            mostLikelyLaneId = selectedLaneId,
             confidence = confidence,
             probabilities = probabilities,
             claimExactLane = exactLane,
