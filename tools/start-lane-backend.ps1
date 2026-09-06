@@ -9,9 +9,8 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
-try {
-    docker info | Out-Null
-} catch {
+docker info *> $null
+if ($LASTEXITCODE -ne 0) {
     Write-Host "Docker Desktop is installed but the Docker engine is not running." -ForegroundColor Red
     Write-Host "Start Docker Desktop, then run this script again."
     exit 1
@@ -51,12 +50,12 @@ $lanIps = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
     } |
     Select-Object -ExpandProperty IPAddress -Unique
 
-Write-Host "" 
+Write-Host ""
 Write-Host "Lane GPS backend is READY." -ForegroundColor Green
 Write-Host "Local PC test: http://127.0.0.1:8080"
 
 if ($lanIps) {
-    Write-Host "" 
+    Write-Host ""
     Write-Host "On your phone, enter one of these under Lane API:" -ForegroundColor Green
     foreach ($ip in $lanIps) {
         Write-Host "  http://${ip}:8080"
@@ -66,5 +65,5 @@ if ($lanIps) {
     Write-Host "Run ipconfig and use your Wi-Fi IPv4 address with port 8080."
 }
 
-Write-Host "" 
+Write-Host ""
 Write-Host "The app can now request nearby OSM lanes automatically when a drive test is active."
