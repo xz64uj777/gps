@@ -72,9 +72,9 @@ object GnssQualityEvaluator {
 
         score += when (val age = input.fixAgeMillis) {
             null -> 0
-            in 0..1500 -> 10
-            in 1501..3000 -> 6
-            in 3001..5000 -> 3
+            in 0L..1500L -> 10
+            in 1501L..3000L -> 6
+            in 3001L..5000L -> 3
             else -> 0
         }
 
