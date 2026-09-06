@@ -296,11 +296,31 @@ class AndroidGnssTracker(
                 fixAgeMillis = fixAge,
             )
         )
+
+        val requiredMotionSensorsPresent =
+            state.rotationSensorAvailable &&
+            state.linearAccelerationAvailable &&
+            state.gyroscopeAvailable
+
+        val laneSensorsReady =
+            quality.laneSensorsReady &&
+            requiredMotionSensorsPresent &&
+            state.sensorFrameCalibrated
+
+        val readinessReason = when {
+            !quality.laneSensorsReady -> quality.reason
+            !state.rotationSensorAvailable -> "Rotation-vector sensor unavailable"
+            !state.linearAccelerationAvailable -> "Linear-acceleration sensor unavailable"
+            !state.gyroscopeAvailable -> "Gyroscope unavailable"
+            !state.sensorFrameCalibrated -> "Drive straight above 9 mph to learn the phone-to-vehicle frame"
+            else -> "Sensor fusion ready; map lane graph still required"
+        }
+
         state = state.copy(
             qualityScore = quality.score,
             qualityLabel = quality.grade.name,
-            sensorLaneReady = quality.laneSensorsReady,
-            qualityReason = quality.reason,
+            sensorLaneReady = laneSensorsReady,
+            qualityReason = readinessReason,
         )
         onState(state)
     }
