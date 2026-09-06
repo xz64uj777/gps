@@ -9,6 +9,7 @@ import android.os.SystemClock
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.sign
 import kotlin.math.sin
 
 data class MotionFusionState(
@@ -60,6 +61,12 @@ class MotionSensorFusion(
     private var motionCandidateSinceElapsed = 0L
     private var confirmedMotion = ""
     private var lastConfirmedEventElapsed = 0L
+
+    private var laneChangePhase = 0
+    private var laneChangeSign = 0f
+    private var laneChangeStartedElapsed = 0L
+    private var laneChangeFirstPhaseSinceElapsed = 0L
+    private var laneChangeStartHeading: Float? = null
 
     private var lastAcceptedRawLateral: Float? = null
     private var lastAcceptedRawYaw: Float? = null
@@ -166,7 +173,7 @@ class MotionSensorFusion(
 
         lastAcceptedRawLateral = raw
         val bounded = raw.coerceIn(-4.0f, 4.0f)
-        val filtered = ema(state.lateralAccelerationMps2, bounded, 0.08f)
+        val filtered = ema(state.lateralAccelerationMps2, bounded, 0.10f)
         state = state.copy(lateralAccelerationMps2 = filtered)
     }
 
@@ -188,8 +195,9 @@ class MotionSensorFusion(
 
     private fun updateMotionState() {
         val now = SystemClock.elapsedRealtime()
-        val instant = classifyInstantMotion(state.lateralAccelerationMps2, state.yawRateDegS)
+        if (updateLaneChangeState(now)) return
 
+        val instant = classifyInstantMotion(state.lateralAccelerationMps2, state.yawRateDegS)
         if (instant == "LOW SPEED" || instant == "STABLE" || instant == "MINOR MOTION") {
             motionCandidate = ""
             motionCandidateSinceElapsed = 0L
@@ -205,11 +213,7 @@ class MotionSensorFusion(
             return
         }
 
-        val requiredDuration = when (instant) {
-            "TURN / CURVE" -> 500L
-            "LEFT LATERAL", "RIGHT LATERAL" -> 400L
-            else -> 500L
-        }
+        val requiredDuration = if (instant == "TURN / CURVE") 500L else 350L
         if (now - motionCandidateSinceElapsed < requiredDuration) {
             state = state.copy(motionHint = "VERIFYING")
             return
@@ -231,14 +235,89 @@ class MotionSensorFusion(
         state = state.copy(motionHint = instant)
     }
 
+    private fun updateLaneChangeState(now: Long): Boolean {
+        if (speedMps < 6.0f || !state.sensorFrameCalibrated) {
+            resetLaneChangeCandidate()
+            return false
+        }
+
+        val lat = state.lateralAccelerationMps2 ?: return false
+        val yaw = abs(state.yawRateDegS ?: 0f)
+        val heading = state.fusedHeadingDegrees
+
+        if (laneChangePhase != 0 && now - laneChangeStartedElapsed > 3500L) {
+            resetLaneChangeCandidate()
+        }
+        if (laneChangePhase != 0 && laneChangeStartHeading != null && heading != null &&
+            angleDifferenceDegrees(laneChangeStartHeading!!, heading) > 18f
+        ) {
+            resetLaneChangeCandidate()
+            return false
+        }
+        if (yaw > 35f) {
+            resetLaneChangeCandidate()
+            return false
+        }
+
+        when (laneChangePhase) {
+            0 -> {
+                if (abs(lat) >= 0.32f && yaw <= 20f) {
+                    if (laneChangeFirstPhaseSinceElapsed == 0L || sign(lat) != laneChangeSign) {
+                        laneChangeSign = sign(lat)
+                        laneChangeFirstPhaseSinceElapsed = now
+                        laneChangeStartHeading = heading
+                    }
+                    if (now - laneChangeFirstPhaseSinceElapsed >= 220L) {
+                        laneChangePhase = 1
+                        laneChangeStartedElapsed = now
+                        state = state.copy(motionHint = "LANE CHANGE VERIFYING")
+                        return true
+                    }
+                } else {
+                    laneChangeFirstPhaseSinceElapsed = 0L
+                    laneChangeSign = 0f
+                }
+            }
+
+            1 -> {
+                state = state.copy(motionHint = "LANE CHANGE VERIFYING")
+                if (lat * laneChangeSign <= -0.22f && yaw <= 22f) {
+                    val returnedHeading = laneChangeStartHeading == null || heading == null ||
+                        angleDifferenceDegrees(laneChangeStartHeading!!, heading) <= 12f
+                    if (returnedHeading && now - lastConfirmedEventElapsed >= 1800L) {
+                        val event = if (laneChangeSign > 0f) "RIGHT LATERAL" else "LEFT LATERAL"
+                        lastConfirmedEventElapsed = now
+                        state = state.copy(
+                            maneuverEvent = event,
+                            maneuverEventSequence = state.maneuverEventSequence + 1L,
+                            motionHint = event,
+                        )
+                        resetLaneChangeCandidate()
+                        return true
+                    }
+                }
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun resetLaneChangeCandidate() {
+        laneChangePhase = 0
+        laneChangeSign = 0f
+        laneChangeStartedElapsed = 0L
+        laneChangeFirstPhaseSinceElapsed = 0L
+        laneChangeStartHeading = null
+    }
+
     private fun classifyInstantMotion(lateral: Float?, yaw: Float?): String {
         if (speedMps < 4.5f) return "LOW SPEED"
         val lat = lateral ?: 0f
         val yawRate = yaw ?: 0f
         return when {
-            abs(yawRate) >= 8f -> "TURN / CURVE"
-            lat >= 0.55f && abs(yawRate) <= 8f -> "RIGHT LATERAL"
-            lat <= -0.55f && abs(yawRate) <= 8f -> "LEFT LATERAL"
+            abs(yawRate) >= 10f -> "TURN / CURVE"
+            lat >= 0.45f && abs(yawRate) <= 10f -> "RIGHT LATERAL"
+            lat <= -0.45f && abs(yawRate) <= 10f -> "LEFT LATERAL"
             abs(lat) <= 0.28f && abs(yawRate) <= 3.5f -> "STABLE"
             else -> "MINOR MOTION"
         }
@@ -253,6 +332,12 @@ class MotionSensorFusion(
             rotationMatrix[3] * x + rotationMatrix[4] * y + rotationMatrix[5] * z,
             rotationMatrix[6] * x + rotationMatrix[7] * y + rotationMatrix[8] * z,
         )
+    }
+
+    private fun angleDifferenceDegrees(a: Float, b: Float): Float {
+        var diff = abs(a - b) % 360f
+        if (diff > 180f) diff = 360f - diff
+        return diff
     }
 
     private fun publish(force: Boolean = false) {
