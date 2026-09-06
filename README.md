@@ -6,9 +6,9 @@ Android-first, open-source/self-hosted prototype for early, live lane-level navi
 
 - Android/Jetpack Compose shell with forward-looking lane visualization.
 - Runtime precise/approximate location permission flow.
-- Live Android GPS/GNSS location fixes and GNSS satellite-status collection.
-- Live accelerometer, gyroscope, and rotation-vector heading telemetry.
-- Real phone observations are passed into the Kotlin lane matcher (real lane candidates still await the route-corridor cache).
+- Live Android `LocationManager` GPS/GNSS fixes.
+- Live `GnssStatus` satellite visibility and used-in-fix counts.
+- Explicit diagnostic states for precise permission, provider availability, and first fix.
 - Pure Kotlin `lane-engine` module.
 - Probabilistic lane matcher with uncertainty handling.
 - Weighted lane-graph planner.
@@ -49,14 +49,25 @@ Open `android/` in Android Studio. Requirements:
 - Gradle 9.6.0
 - Android Gradle Plugin 9.4.0
 
-The Android UI no longer fabricates a current-lane estimate. It requests foreground
-location in context, streams real phone GPS/GNSS and motion-sensor observations, and
-passes them into `LaneMatcher`. Because the OSM route/lane corridor is not yet cached
-on-device, the candidate lane list is intentionally empty and the UI reports the
-current lane as uncertain.
+The current Android screen is a live GNSS diagnostic build. It requests location
+permission, reports whether precise location is enabled, shows GPS/network provider
+state, and displays latitude, longitude, accuracy, speed, bearing, plus GNSS satellite
+counts as fixes arrive.
 
-The next Android seam is the active-route lane-corridor cache; the next backend seam
-is the OSM PBF -> road/lane graph importer.
+The forward-looking lane graphic is intentionally a visualization placeholder.
+Real lane geometry is not loaded yet, so `Lane data: NOT LOADED` is expected until
+the OSM route/lane corridor is connected to Android.
+
+## Live GNSS test
+
+1. Grant **Location → Precise → While using the app**.
+2. Make sure the phone's system Location setting is ON.
+3. Test outdoors with a clear sky view.
+4. Launch the app.
+5. `GNSS fix: waiting…` should transition to `GNSS fix: OK` after a location fix.
+6. Latitude, longitude, accuracy, speed, bearing, and satellite counts should update.
+
+If `Precise: NO`, exact-lane mode should remain unavailable rather than pretending to know the lane.
 
 ## Replay evaluator
 
@@ -66,10 +77,10 @@ python tools/drive-replay/replay.py tools/drive-replay/sample-drive.jsonl
 
 ## Core next steps
 
-1. Device-to-vehicle sensor-frame calibration + sensor fusion.
-2. OSM PBF importer for the selected launch region.
-3. Lane centerlines and junction connectivity.
-4. Lane-centerline generation and connectivity enrichment.
+1. Connect live GNSS observations to the lane matcher and active-route lane candidates.
+2. Motion-sensor fusion and device-to-vehicle calibration.
+3. OSM PBF importer for the selected launch region.
+4. Lane-centerline generation and junction connectivity enrichment.
 5. Self-hosted OSM road routing integration.
 6. Active-route corridor download/cache.
 7. Drive recorder with passenger-entered ground truth.
