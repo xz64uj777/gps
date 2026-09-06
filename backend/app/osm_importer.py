@@ -132,21 +132,32 @@ def utm_srid(lat: float, lon: float) -> int:
     return (32600 if lat >= 0 else 32700) + zone
 
 
-def import_corridor(lat: float, lon: float, radius_m: int = 1200, overpass_url: str = DEFAULT_OVERPASS_URL) -> dict[str, int]:
+def import_corridor(
+    lat: float,
+    lon: float,
+    radius_m: int = 1200,
+    overpass_url: str = DEFAULT_OVERPASS_URL,
+    manage_pool: bool = True,
+) -> dict[str, int]:
     payload = fetch_overpass(lat, lon, radius_m, overpass_url)
     ways = directional_ways_from_overpass(payload)
-    imported_lanes = 0
 
-    pool.open()
+    if manage_pool:
+        pool.open()
     try:
-        with pool.connection() as conn:
-            for way in ways:
-                _replace_way(conn, way)
-                imported_lanes += len(way.lanes)
-            conn.commit()
+        return persist_directional_ways(ways)
     finally:
-        pool.close()
+        if manage_pool:
+            pool.close()
 
+
+def persist_directional_ways(ways: list[DirectionalWay]) -> dict[str, int]:
+    imported_lanes = 0
+    with pool.connection() as conn:
+        for way in ways:
+            _replace_way(conn, way)
+            imported_lanes += len(way.lanes)
+        conn.commit()
     return {"ways": len(ways), "lanes": imported_lanes}
 
 
