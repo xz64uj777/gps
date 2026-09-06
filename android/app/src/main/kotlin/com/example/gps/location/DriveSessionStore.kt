@@ -4,6 +4,7 @@ import android.content.Context
 
 class DriveSessionStore(context: Context) {
     private val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val telemetry = DriveTelemetryRecorder(context)
 
     fun isActive(): Boolean = prefs.getBoolean(KEY_ACTIVE, false)
 
@@ -13,6 +14,7 @@ class DriveSessionStore(context: Context) {
 
     fun clearSession() {
         prefs.edit().clear().commit()
+        telemetry.startNew()
     }
 
     fun save(state: GnssUiState) {
@@ -44,6 +46,7 @@ class DriveSessionStore(context: Context) {
             .putInt(KEY_LAST_QUALITY, state.qualityScore)
             .putString(KEY_LAST_QUALITY_LABEL, state.qualityLabel)
             .commit()
+        telemetry.append(state)
     }
 
     fun load(): GnssUiState {
