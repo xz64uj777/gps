@@ -14,5 +14,4 @@ The APK inside the artifact is:
 
 `app-debug.apk`
 
-The workflow intentionally installs Gradle 9.6 because this repository did not originally include
-a complete Gradle wrapper. It builds the Android project under `android/`.
+The workflow installs Gradle 9.6.0 and builds the Android project under `android/`.

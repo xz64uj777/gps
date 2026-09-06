@@ -46,7 +46,7 @@ Open `android/` in Android Studio. Requirements:
 
 - JDK 17
 - Android SDK 37
-- Gradle 9.6
+- Gradle 9.6.0
 - Android Gradle Plugin 9.4.0
 
 The Android UI no longer fabricates a current-lane estimate. It requests foreground
