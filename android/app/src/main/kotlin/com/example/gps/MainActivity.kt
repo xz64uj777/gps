@@ -1,7 +1,9 @@
 package com.example.gps
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -20,60 +22,130 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.text.font.FontWeight
 import androidx.core.content.ContextCompat
-import com.example.gps.location.AndroidGnssTracker
+import com.example.gps.location.DriveSessionRuntime
+import com.example.gps.location.DriveSessionStore
+import com.example.gps.location.DriveTrackingService
 import com.example.gps.location.GnssUiState
 
 class MainActivity : ComponentActivity() {
-    private var tracker: AndroidGnssTracker? = null
+    private lateinit var store: DriveSessionStore
     private var uiState by mutableStateOf(GnssUiState())
+    private var sessionActive by mutableStateOf(false)
+    private var pendingStart = false
 
-    private val locationPermissionLauncher =
+    private val runtimeListener: (GnssUiState) -> Unit = { state ->
+        runOnUiThread {
+            uiState = state
+            sessionActive = store.isActive()
+        }
+    }
+
+    private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
-            tracker?.refreshPermissionState()
-            tracker?.start()
+            val shouldStart = pendingStart && hasFineLocationPermission()
+            pendingStart = false
+            if (shouldStart) startDriveTestInternal()
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        tracker = AndroidGnssTracker(this) { state -> runOnUiThread { uiState = state } }
+        store = DriveSessionStore(this)
+        uiState = DriveSessionRuntime.latest() ?: store.load()
+        sessionActive = store.isActive()
+
         setContent {
             MaterialTheme {
-                NavigationDebugScreen(state = uiState, requestPermission = { requestLocationPermission() })
+                NavigationDebugScreen(
+                    state = uiState,
+                    sessionActive = sessionActive,
+                    requestPermission = { requestPermissionsForDrive(startAfterGrant = false) },
+                    startDrive = { startDriveTest() },
+                    stopDrive = { stopDriveTest() },
+                )
             }
         }
-        if (hasAnyLocationPermission()) tracker?.start() else requestLocationPermission()
+
+        if (sessionActive && hasFineLocationPermission()) {
+            resumeActiveDriveTest()
+        }
     }
 
-    override fun onResume() {
-        super.onResume()
-        tracker?.start()
+    override fun onStart() {
+        super.onStart()
+        uiState = DriveSessionRuntime.latest() ?: store.load()
+        sessionActive = store.isActive()
+        DriveSessionRuntime.addListener(runtimeListener)
     }
 
-    override fun onPause() {
-        tracker?.stop()
-        super.onPause()
+    override fun onStop() {
+        DriveSessionRuntime.removeListener(runtimeListener)
+        super.onStop()
     }
 
-    private fun hasAnyLocationPermission(): Boolean =
-        ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
-            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+    private fun startDriveTest() {
+        val needsNotificationPermission =
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+                PackageManager.PERMISSION_GRANTED
 
-    private fun requestLocationPermission() {
-        locationPermissionLauncher.launch(
-            arrayOf(
-                Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.ACCESS_COARSE_LOCATION,
-            )
+        if (!hasFineLocationPermission() || needsNotificationPermission) {
+            requestPermissionsForDrive(startAfterGrant = true)
+        } else {
+            startDriveTestInternal()
+        }
+    }
+
+    private fun startDriveTestInternal() {
+        sessionActive = true
+        uiState = GnssUiState(message = "Starting new drive test…")
+        val intent = Intent(this, DriveTrackingService::class.java)
+            .setAction(DriveTrackingService.ACTION_START)
+            .putExtra(DriveTrackingService.EXTRA_RESET, true)
+        ContextCompat.startForegroundService(this, intent)
+    }
+
+    private fun resumeActiveDriveTest() {
+        val intent = Intent(this, DriveTrackingService::class.java)
+            .setAction(DriveTrackingService.ACTION_RESUME)
+        ContextCompat.startForegroundService(this, intent)
+    }
+
+    private fun stopDriveTest() {
+        sessionActive = false
+        val intent = Intent(this, DriveTrackingService::class.java)
+            .setAction(DriveTrackingService.ACTION_STOP)
+        startService(intent)
+    }
+
+    private fun hasFineLocationPermission(): Boolean =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+
+    private fun requestPermissionsForDrive(startAfterGrant: Boolean) {
+        pendingStart = startAfterGrant
+        val permissions = mutableListOf(
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
         )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissions += Manifest.permission.POST_NOTIFICATIONS
+        }
+        permissionLauncher.launch(permissions.toTypedArray())
     }
 }
 
 @Composable
-private fun NavigationDebugScreen(state: GnssUiState, requestPermission: () -> Unit) {
+private fun NavigationDebugScreen(
+    state: GnssUiState,
+    sessionActive: Boolean,
+    requestPermission: () -> Unit,
+    startDrive: () -> Unit,
+    stopDrive: () -> Unit,
+) {
     Column(
         Modifier
             .fillMaxSize()
@@ -81,20 +153,43 @@ private fun NavigationDebugScreen(state: GnssUiState, requestPermission: () -> U
             .verticalScroll(rememberScrollState())
             .padding(16.dp)
     ) {
-        Text("Lane GPS · Drive Test v2", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 24.sp)
+        Text("Lane GPS · Durable Drive Test", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 24.sp)
         Spacer(Modifier.height(8.dp))
         Text(state.message, color = statusColor(state), fontSize = 18.sp)
 
-        if (!state.permissionFine) {
+        Spacer(Modifier.height(14.dp))
+        SectionTitle("Drive session")
+        Text(
+            if (sessionActive) "RECORDING · SAFE TO TURN SCREEN OFF" else "STOPPED · SUMMARY SAVED LOCALLY",
+            color = if (sessionActive) Color(0xFF7EE787) else Color(0xFF8ED7FF),
+            fontWeight = FontWeight.Bold,
+        )
+        Spacer(Modifier.height(8.dp))
+        Button(onClick = if (sessionActive) stopDrive else startDrive) {
+            Text(if (sessionActive) "STOP & SAVE DRIVE TEST" else "START NEW DRIVE TEST")
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            if (sessionActive)
+                "Recording runs as a foreground service, persists every second, and continues when the screen turns off or the app is backgrounded."
+            else if (state.sessionSamples > 0)
+                "This summary stays saved until you start a new drive test. Starting a new test clears the saved totals."
+            else
+                "Start a drive test while parked, then leave the phone mounted and drive normally.",
+            color = Color(0xFFB8C1CC),
+            fontSize = 12.sp,
+        )
+
+        if (!state.permissionFine && !sessionActive) {
             Spacer(Modifier.height(10.dp))
             Text(
                 if (state.permissionCoarse)
-                    "Approximate permission is active. Android Settings → Apps → Lane GPS → Permissions → Location → Precise."
-                else "Location permission has not been granted.",
+                    "Approximate permission is active. Precise location is required for a drive test."
+                else "Precise location permission is required.",
                 color = Color(0xFFFFCC80)
             )
             Spacer(Modifier.height(8.dp))
-            Button(onClick = requestPermission) { Text("Request location permission") }
+            Button(onClick = requestPermission) { Text("Request permissions") }
         }
 
         Spacer(Modifier.height(14.dp))
@@ -159,12 +254,7 @@ private fun NavigationDebugScreen(state: GnssUiState, requestPermission: () -> U
         DebugRow("Spikes reject", state.sessionRejectedMotionSpikes.toString())
         DebugRow("Calibrated", if (state.sessionCalibrationReached) "YES" else "NO")
         Text(
-            "Events now require sustained motion and use a cooldown; brief sensor jolts are rejected instead of counted as maneuvers.",
-            color = Color(0xFFB8C1CC),
-            fontSize = 12.sp,
-        )
-        Text(
-            "After the drive, park safely and send this summary. No need to watch the phone while moving.",
+            "Once stopped, these totals are stored on the phone and survive app restarts. You can come back later and send the summary.",
             color = Color(0xFF7EE787),
             fontSize = 13.sp,
             fontWeight = FontWeight.Bold,
