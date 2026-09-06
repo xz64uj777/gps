@@ -1,0 +1,5 @@
+{"timestamp": 1, "predicted_lane": "L3", "confidence": 0.91, "actual_lane": "L3"}
+{"timestamp": 2, "predicted_lane": "L3", "confidence": 0.9, "actual_lane": "L3"}
+{"timestamp": 3, "predicted_lane": "L3", "confidence": 0.76, "actual_lane": "L3"}
+{"timestamp": 4, "predicted_lane": "L2", "confidence": 0.86, "actual_lane": "L2"}
+{"timestamp": 5, "predicted_lane": "L2", "confidence": 0.93, "actual_lane": "L2"}
