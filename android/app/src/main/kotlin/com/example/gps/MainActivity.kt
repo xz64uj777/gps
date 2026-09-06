@@ -39,20 +39,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        tracker = AndroidGnssTracker(this) { state ->
-            runOnUiThread { uiState = state }
-        }
-
+        tracker = AndroidGnssTracker(this) { state -> runOnUiThread { uiState = state } }
         setContent {
             MaterialTheme {
-                NavigationDebugScreen(
-                    state = uiState,
-                    requestPermission = { requestLocationPermission() }
-                )
+                NavigationDebugScreen(state = uiState, requestPermission = { requestLocationPermission() })
             }
         }
-
         if (hasAnyLocationPermission()) tracker?.start() else requestLocationPermission()
     }
 
@@ -67,39 +59,20 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun hasAnyLocationPermission(): Boolean =
-        ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) ==
-            PackageManager.PERMISSION_GRANTED ||
-        ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) ==
-            PackageManager.PERMISSION_GRANTED
+        ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
     private fun requestLocationPermission() {
-        locationPermissionLauncher.launch(
-            arrayOf(
-                Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.ACCESS_COARSE_LOCATION,
-            )
-        )
+        locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
     }
 }
 
 @Composable
-private fun NavigationDebugScreen(
-    state: GnssUiState,
-    requestPermission: () -> Unit,
-) {
+private fun NavigationDebugScreen(state: GnssUiState, requestPermission: () -> Unit) {
     Column(
-        Modifier
-            .fillMaxSize()
-            .background(Color(0xFF0D1117))
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp)
+        Modifier.fillMaxSize().background(Color(0xFF0D1117)).verticalScroll(rememberScrollState()).padding(16.dp)
     ) {
-        Text(
-            "Lane GPS · Sensor Fusion",
-            color = Color.White,
-            fontWeight = FontWeight.Bold,
-            fontSize = 24.sp
-        )
+        Text("Lane GPS · Drive Test", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 24.sp)
         Spacer(Modifier.height(8.dp))
         Text(state.message, color = statusColor(state), fontSize = 18.sp)
 
@@ -108,8 +81,7 @@ private fun NavigationDebugScreen(
             Text(
                 if (state.permissionCoarse)
                     "Approximate permission is active. Android Settings → Apps → Lane GPS → Permissions → Location → Precise."
-                else
-                    "Location permission has not been granted.",
+                else "Location permission has not been granted.",
                 color = Color(0xFFFFCC80)
             )
             Spacer(Modifier.height(8.dp))
@@ -154,24 +126,31 @@ private fun NavigationDebugScreen(
             fontSize = 18.sp,
         )
         Text(state.qualityReason, color = Color(0xFFB8C1CC), fontSize = 13.sp)
+
+        Spacer(Modifier.height(18.dp))
+        SectionTitle("Drive test summary")
+        DebugRow("GPS samples", state.sessionSamples.toString())
+        DebugRow("Best accuracy", state.sessionBestAccuracyMeters?.let { "%.1f m".format(it) } ?: "—")
+        DebugRow("Worst accuracy", state.sessionWorstAccuracyMeters?.let { "%.1f m".format(it) } ?: "—")
+        DebugRow("Avg quality", if (state.sessionSamples > 0) "${state.sessionAverageQuality}/100" else "—")
+        DebugRow("Peak lateral", "%.2f m/s²".format(state.sessionPeakLateralAccelerationMps2))
+        DebugRow("Peak yaw", "%.1f°/s".format(state.sessionPeakYawRateDegS))
+        DebugRow("Left events", state.sessionLeftLateralEvents.toString())
+        DebugRow("Right events", state.sessionRightLateralEvents.toString())
+        DebugRow("Turn events", state.sessionTurnEvents.toString())
+        DebugRow("Calibrated", if (state.sessionCalibrationReached) "YES" else "NO")
         Text(
-            "READY does not mean the exact lane is known. It only means the phone sensors are good enough to attempt lane matching once real road/lane geometry is loaded.",
-            color = Color(0xFF8B949E),
-            fontSize = 12.sp,
+            "After the drive, park safely and send a screenshot of this summary. No need to watch the phone while moving.",
+            color = Color(0xFF7EE787),
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold,
         )
 
         Spacer(Modifier.height(18.dp))
         Text("Lane data: NOT LOADED", color = Color(0xFFFFCC80), fontWeight = FontWeight.Bold)
-        Text(
-            "No exact current-lane marker is drawn until the OSM lane graph is connected.",
-            color = Color(0xFFB8C1CC),
-            fontSize = 13.sp
-        )
-
+        Text("No exact current-lane marker is drawn until the OSM lane graph is connected.", color = Color(0xFFB8C1CC), fontSize = 13.sp)
         Spacer(Modifier.height(8.dp))
-        Box(Modifier.fillMaxWidth().height(320.dp)) {
-            ForwardLaneView(laneCount = 5)
-        }
+        Box(Modifier.fillMaxWidth().height(320.dp)) { ForwardLaneView(laneCount = 5) }
     }
 }
 
@@ -203,7 +182,6 @@ private fun ForwardLaneView(laneCount: Int) {
         val horizonHalfWidth = size.width * 0.12f
         val bottomHalfWidth = size.width * 0.48f
         val centerX = size.width / 2f
-
         for (i in 0..laneCount) {
             val t = i.toFloat() / laneCount
             val topX = centerX - horizonHalfWidth + 2 * horizonHalfWidth * t
@@ -216,7 +194,6 @@ private fun ForwardLaneView(laneCount: Int) {
                 cap = StrokeCap.Round,
             )
         }
-
         val unknownBand = Path().apply {
             moveTo(centerX - horizonHalfWidth, horizonY)
             lineTo(centerX + horizonHalfWidth, horizonY)

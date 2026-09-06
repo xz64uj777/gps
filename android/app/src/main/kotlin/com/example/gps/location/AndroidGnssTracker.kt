@@ -13,6 +13,7 @@ import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import com.example.gps.laneengine.GnssQualityEvaluator
 import com.example.gps.laneengine.GnssQualityInput
+import kotlin.math.abs
 
 data class GnssUiState(
     val permissionFine: Boolean = false,
@@ -44,6 +45,16 @@ data class GnssUiState(
     val sensorLaneReady: Boolean = false,
     val qualityReason: String = "Waiting for GNSS fix",
     val message: String = "GNSS fix: waiting…",
+    val sessionSamples: Int = 0,
+    val sessionBestAccuracyMeters: Float? = null,
+    val sessionWorstAccuracyMeters: Float? = null,
+    val sessionAverageQuality: Int = 0,
+    val sessionPeakLateralAccelerationMps2: Float = 0f,
+    val sessionPeakYawRateDegS: Float = 0f,
+    val sessionLeftLateralEvents: Int = 0,
+    val sessionRightLateralEvents: Int = 0,
+    val sessionTurnEvents: Int = 0,
+    val sessionCalibrationReached: Boolean = false,
 )
 
 class AndroidGnssTracker(
@@ -58,8 +69,23 @@ class AndroidGnssTracker(
     private var started = false
     private var gpsProviderEnabled = false
     private var lastGpsFixElapsed = 0L
+    private var qualityAccumulator = 0L
+    private var lastMotionBucket = ""
 
     private val motionFusion = MotionSensorFusion(appContext) { motion ->
+        val bucket = motion.motionHint
+        var leftEvents = state.sessionLeftLateralEvents
+        var rightEvents = state.sessionRightLateralEvents
+        var turnEvents = state.sessionTurnEvents
+        if (bucket != lastMotionBucket) {
+            when (bucket) {
+                "LEFT LATERAL" -> leftEvents++
+                "RIGHT LATERAL" -> rightEvents++
+                "TURN / CURVE" -> turnEvents++
+            }
+            lastMotionBucket = bucket
+        }
+
         state = state.copy(
             sensorHeadingDegrees = motion.sensorHeadingDegrees,
             fusedHeadingDegrees = motion.fusedHeadingDegrees,
@@ -70,6 +96,18 @@ class AndroidGnssTracker(
             rotationSensorAvailable = motion.rotationSensorAvailable,
             linearAccelerationAvailable = motion.linearAccelerationAvailable,
             gyroscopeAvailable = motion.gyroscopeAvailable,
+            sessionPeakLateralAccelerationMps2 = maxOf(
+                state.sessionPeakLateralAccelerationMps2,
+                abs(motion.lateralAccelerationMps2 ?: 0f),
+            ),
+            sessionPeakYawRateDegS = maxOf(
+                state.sessionPeakYawRateDegS,
+                abs(motion.yawRateDegS ?: 0f),
+            ),
+            sessionLeftLateralEvents = leftEvents,
+            sessionRightLateralEvents = rightEvents,
+            sessionTurnEvents = turnEvents,
+            sessionCalibrationReached = state.sessionCalibrationReached || motion.sensorFrameCalibrated,
         )
         publish()
     }
@@ -84,13 +122,9 @@ class AndroidGnssTracker(
                 state.permissionFine &&
                 gpsProviderEnabled &&
                 nowElapsed - lastGpsFixElapsed < 5000L
-            ) {
-                return
-            }
+            ) return
 
-            if (provider == LocationManager.GPS_PROVIDER) {
-                lastGpsFixElapsed = nowElapsed
-            }
+            if (provider == LocationManager.GPS_PROVIDER) lastGpsFixElapsed = nowElapsed
 
             val bearing = if (location.hasBearing()) location.bearing else null
             val speed = if (location.hasSpeed()) location.speed else null
@@ -109,7 +143,7 @@ class AndroidGnssTracker(
                 lastUpdateMillis = location.time,
                 message = if (provider == LocationManager.GPS_PROVIDER) "GNSS fix: OK" else "Network location fallback",
             )
-            publish()
+            publish(recordSample = true)
         }
 
         override fun onProviderEnabled(provider: String) {
@@ -170,14 +204,8 @@ class AndroidGnssTracker(
     }
 
     fun refreshPermissionState() {
-        val fine = ContextCompat.checkSelfPermission(
-            appContext, Manifest.permission.ACCESS_FINE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED
-
-        val coarse = ContextCompat.checkSelfPermission(
-            appContext, Manifest.permission.ACCESS_COARSE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED
-
+        val fine = ContextCompat.checkSelfPermission(appContext, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val coarse = ContextCompat.checkSelfPermission(appContext, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
         state = state.copy(
             permissionFine = fine,
             permissionCoarse = coarse,
@@ -198,16 +226,8 @@ class AndroidGnssTracker(
         if (started) return
         started = true
 
-        gpsProviderEnabled = try {
-            locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
-        } catch (_: Exception) {
-            false
-        }
-        val networkEnabled = try {
-            locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
-        } catch (_: Exception) {
-            false
-        }
+        gpsProviderEnabled = try { locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) } catch (_: Exception) { false }
+        val networkEnabled = try { locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER) } catch (_: Exception) { false }
 
         state = state.copy(
             providerEnabled = gpsProviderEnabled || networkEnabled,
@@ -221,31 +241,15 @@ class AndroidGnssTracker(
         publish()
 
         if (gpsProviderEnabled) {
-            locationManager.requestLocationUpdates(
-                LocationManager.GPS_PROVIDER,
-                250L,
-                0f,
-                locationListener,
-            )
+            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 250L, 0f, locationListener)
         }
-
         if (networkEnabled) {
-            locationManager.requestLocationUpdates(
-                LocationManager.NETWORK_PROVIDER,
-                1000L,
-                0f,
-                locationListener,
-            )
+            locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 1000L, 0f, locationListener)
         }
-
         if (state.permissionFine) {
             try {
-                locationManager.registerGnssStatusCallback(
-                    gnssCallback,
-                    android.os.Handler(appContext.mainLooper)
-                )
-            } catch (_: Exception) {
-            }
+                locationManager.registerGnssStatusCallback(gnssCallback, android.os.Handler(appContext.mainLooper))
+            } catch (_: Exception) {}
         }
     }
 
@@ -254,36 +258,20 @@ class AndroidGnssTracker(
             motionFusion.stop()
             return
         }
-        try {
-            locationManager.removeUpdates(locationListener)
-        } catch (_: Exception) {
-        }
-        try {
-            locationManager.unregisterGnssStatusCallback(gnssCallback)
-        } catch (_: Exception) {
-        }
+        try { locationManager.removeUpdates(locationListener) } catch (_: Exception) {}
+        try { locationManager.unregisterGnssStatusCallback(gnssCallback) } catch (_: Exception) {}
         motionFusion.stop()
         started = false
     }
 
     private fun anyProviderEnabled(): Boolean {
-        val gps = try {
-            locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
-        } catch (_: Exception) {
-            false
-        }
-        val network = try {
-            locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
-        } catch (_: Exception) {
-            false
-        }
+        val gps = try { locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) } catch (_: Exception) { false }
+        val network = try { locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER) } catch (_: Exception) { false }
         return gps || network
     }
 
-    private fun publish() {
-        val fixAge = state.lastUpdateMillis?.let {
-            (System.currentTimeMillis() - it).coerceAtLeast(0L)
-        }
+    private fun publish(recordSample: Boolean = false) {
+        val fixAge = state.lastUpdateMillis?.let { (System.currentTimeMillis() - it).coerceAtLeast(0L) }
         val quality = GnssQualityEvaluator.evaluate(
             GnssQualityInput(
                 hasFix = state.fixReceived,
@@ -297,30 +285,39 @@ class AndroidGnssTracker(
             )
         )
 
-        val requiredMotionSensorsPresent =
-            state.rotationSensorAvailable &&
-            state.linearAccelerationAvailable &&
-            state.gyroscopeAvailable
-
-        val laneSensorsReady =
-            quality.laneSensorsReady &&
-            requiredMotionSensorsPresent &&
-            state.sensorFrameCalibrated
-
-        val readinessReason = when {
+        val allRequiredSensors = state.rotationSensorAvailable && state.linearAccelerationAvailable && state.gyroscopeAvailable
+        val laneReady = quality.laneSensorsReady && state.sensorFrameCalibrated && allRequiredSensors
+        val reason = when {
             !quality.laneSensorsReady -> quality.reason
-            !state.rotationSensorAvailable -> "Rotation-vector sensor unavailable"
-            !state.linearAccelerationAvailable -> "Linear-acceleration sensor unavailable"
-            !state.gyroscopeAvailable -> "Gyroscope unavailable"
-            !state.sensorFrameCalibrated -> "Drive straight above 9 mph to learn the phone-to-vehicle frame"
-            else -> "Sensor fusion ready; map lane graph still required"
+            !allRequiredSensors -> "Required motion sensor unavailable"
+            !state.sensorFrameCalibrated -> "Drive straight above 9 mph to learn phone-to-car frame"
+            else -> "Sensor gate ready; map lane graph still required"
+        }
+
+        var samples = state.sessionSamples
+        var bestAccuracy = state.sessionBestAccuracyMeters
+        var worstAccuracy = state.sessionWorstAccuracyMeters
+        var averageQuality = state.sessionAverageQuality
+        if (recordSample && state.provider == LocationManager.GPS_PROVIDER) {
+            samples++
+            val accuracy = state.accuracyMeters
+            if (accuracy != null) {
+                bestAccuracy = bestAccuracy?.let { minOf(it, accuracy) } ?: accuracy
+                worstAccuracy = worstAccuracy?.let { maxOf(it, accuracy) } ?: accuracy
+            }
+            qualityAccumulator += quality.score.toLong()
+            averageQuality = if (samples > 0) (qualityAccumulator / samples).toInt() else 0
         }
 
         state = state.copy(
             qualityScore = quality.score,
             qualityLabel = quality.grade.name,
-            sensorLaneReady = laneSensorsReady,
-            qualityReason = readinessReason,
+            sensorLaneReady = laneReady,
+            qualityReason = reason,
+            sessionSamples = samples,
+            sessionBestAccuracyMeters = bestAccuracy,
+            sessionWorstAccuracyMeters = worstAccuracy,
+            sessionAverageQuality = averageQuality,
         )
         onState(state)
     }
