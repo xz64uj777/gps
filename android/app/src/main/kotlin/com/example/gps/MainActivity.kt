@@ -63,16 +63,25 @@ class MainActivity : ComponentActivity() {
             ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
     private fun requestLocationPermission() {
-        locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+        locationPermissionLauncher.launch(
+            arrayOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+            )
+        )
     }
 }
 
 @Composable
 private fun NavigationDebugScreen(state: GnssUiState, requestPermission: () -> Unit) {
     Column(
-        Modifier.fillMaxSize().background(Color(0xFF0D1117)).verticalScroll(rememberScrollState()).padding(16.dp)
+        Modifier
+            .fillMaxSize()
+            .background(Color(0xFF0D1117))
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp)
     ) {
-        Text("Lane GPS · Drive Test", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 24.sp)
+        Text("Lane GPS · Drive Test v2", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 24.sp)
         Spacer(Modifier.height(8.dp))
         Text(state.message, color = statusColor(state), fontSize = 18.sp)
 
@@ -108,7 +117,7 @@ private fun NavigationDebugScreen(state: GnssUiState, requestPermission: () -> U
         DebugRow("Lateral accel", state.lateralAccelerationMps2?.let { "%+.2f m/s²".format(it) } ?: "—")
         DebugRow("Yaw rate", state.yawRateDegS?.let { "%+.1f°/s".format(it) } ?: "—")
         DebugRow("Motion", state.motionHint)
-        DebugRow("Frame calib.", if (state.sensorFrameCalibrated) "LEARNED" else "DRIVE STRAIGHT > 9 mph")
+        DebugRow("Frame calib.", if (state.sensorFrameCalibrated) "LEARNED" else "DRIVE STRAIGHT > 11 mph")
         DebugRow(
             "Sensors",
             listOf(
@@ -135,12 +144,27 @@ private fun NavigationDebugScreen(state: GnssUiState, requestPermission: () -> U
         DebugRow("Avg quality", if (state.sessionSamples > 0) "${state.sessionAverageQuality}/100" else "—")
         DebugRow("Peak lateral", "%.2f m/s²".format(state.sessionPeakLateralAccelerationMps2))
         DebugRow("Peak yaw", "%.1f°/s".format(state.sessionPeakYawRateDegS))
-        DebugRow("Left events", state.sessionLeftLateralEvents.toString())
-        DebugRow("Right events", state.sessionRightLateralEvents.toString())
-        DebugRow("Turn events", state.sessionTurnEvents.toString())
+        DebugRow(
+            "Heading avg",
+            if (state.sessionHeadingSamples > 0) "%.1f°".format(state.sessionAverageHeadingErrorDeg) else "—",
+        )
+        DebugRow(
+            "Heading peak",
+            if (state.sessionHeadingSamples > 0) "%.1f°".format(state.sessionPeakHeadingErrorDeg) else "—",
+        )
+        DebugRow("Heading pts", state.sessionHeadingSamples.toString())
+        DebugRow("Lane-like L", state.sessionLeftLateralEvents.toString())
+        DebugRow("Lane-like R", state.sessionRightLateralEvents.toString())
+        DebugRow("Turns/curves", state.sessionTurnEvents.toString())
+        DebugRow("Spikes reject", state.sessionRejectedMotionSpikes.toString())
         DebugRow("Calibrated", if (state.sessionCalibrationReached) "YES" else "NO")
         Text(
-            "After the drive, park safely and send a screenshot of this summary. No need to watch the phone while moving.",
+            "Events now require sustained motion and use a cooldown; brief sensor jolts are rejected instead of counted as maneuvers.",
+            color = Color(0xFFB8C1CC),
+            fontSize = 12.sp,
+        )
+        Text(
+            "After the drive, park safely and send this summary. No need to watch the phone while moving.",
             color = Color(0xFF7EE787),
             fontSize = 13.sp,
             fontWeight = FontWeight.Bold,
@@ -148,7 +172,11 @@ private fun NavigationDebugScreen(state: GnssUiState, requestPermission: () -> U
 
         Spacer(Modifier.height(18.dp))
         Text("Lane data: NOT LOADED", color = Color(0xFFFFCC80), fontWeight = FontWeight.Bold)
-        Text("No exact current-lane marker is drawn until the OSM lane graph is connected.", color = Color(0xFFB8C1CC), fontSize = 13.sp)
+        Text(
+            "No exact current-lane marker is drawn until the OSM lane graph is connected.",
+            color = Color(0xFFB8C1CC),
+            fontSize = 13.sp,
+        )
         Spacer(Modifier.height(8.dp))
         Box(Modifier.fillMaxWidth().height(320.dp)) { ForwardLaneView(laneCount = 5) }
     }
@@ -182,6 +210,7 @@ private fun ForwardLaneView(laneCount: Int) {
         val horizonHalfWidth = size.width * 0.12f
         val bottomHalfWidth = size.width * 0.48f
         val centerX = size.width / 2f
+
         for (i in 0..laneCount) {
             val t = i.toFloat() / laneCount
             val topX = centerX - horizonHalfWidth + 2 * horizonHalfWidth * t
@@ -194,6 +223,7 @@ private fun ForwardLaneView(laneCount: Int) {
                 cap = StrokeCap.Round,
             )
         }
+
         val unknownBand = Path().apply {
             moveTo(centerX - horizonHalfWidth, horizonY)
             lineTo(centerX + horizonHalfWidth, horizonY)
