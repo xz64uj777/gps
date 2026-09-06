@@ -11,17 +11,23 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
 import com.example.gps.MainActivity
-import com.example.gps.lane.LaneApiClient
-import com.example.gps.lane.LaneApiSettings
+import com.example.gps.lane.DirectOsmLaneClient
 import com.example.gps.laneengine.GeoPoint
 import com.example.gps.laneengine.Lane
 import com.example.gps.laneengine.LaneMatcher
 import com.example.gps.laneengine.Observation
 import java.util.concurrent.Executors
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.exp
+import kotlin.math.hypot
+import kotlin.math.sin
+import kotlin.math.sqrt
 
 class DriveTrackingService : Service() {
     private lateinit var store: DriveSessionStore
-    private lateinit var laneApiSettings: LaneApiSettings
     private var tracker: AndroidGnssTracker? = null
     @Volatile private var latestState: GnssUiState? = null
     private var lastPersistElapsed = 0L
@@ -33,13 +39,12 @@ class DriveTrackingService : Service() {
     @Volatile private var cachedLanes: List<Lane> = emptyList()
     @Volatile private var laneFetchInFlight = false
     private var lastLaneFetchElapsed = 0L
-    private var cachedBaseUrl = ""
-    @Volatile private var laneOverlay = LaneOverlay()
+    private var lastLaneFetchPoint: GeoPoint? = null
+    @Volatile private var laneOverlay = LaneOverlay(status = "OSM DIRECT · WAITING FOR LOCATION")
 
     override fun onCreate() {
         super.onCreate()
         store = DriveSessionStore(this)
-        laneApiSettings = LaneApiSettings(this)
         createNotificationChannel()
     }
 
@@ -49,19 +54,11 @@ class DriveTrackingService : Service() {
                 stopAndSave()
                 return START_NOT_STICKY
             }
-
-            ACTION_START -> {
-                startRecording(resetSession = intent.getBooleanExtra(EXTRA_RESET, true))
-            }
-
-            ACTION_RESUME -> {
-                startRecording(resetSession = false)
-            }
-
+            ACTION_START -> startRecording(resetSession = intent.getBooleanExtra(EXTRA_RESET, true))
+            ACTION_RESUME -> startRecording(resetSession = false)
             else -> {
-                if (store.isActive()) {
-                    startRecording(resetSession = false)
-                } else {
+                if (store.isActive()) startRecording(resetSession = false)
+                else {
                     stopSelf()
                     return START_NOT_STICKY
                 }
@@ -90,10 +87,11 @@ class DriveTrackingService : Service() {
             synchronized(laneLock) {
                 laneMatcher = LaneMatcher()
                 cachedLanes = emptyList()
-                laneOverlay = LaneOverlay()
+                laneOverlay = LaneOverlay(status = "OSM DIRECT · WAITING FOR LOCATION")
+                lastLaneFetchPoint = null
+                lastLaneFetchElapsed = 0L
             }
         }
-
         if (tracker != null) return
 
         store.setActive(true)
@@ -125,7 +123,6 @@ class DriveTrackingService : Service() {
     private fun stopAndSave() {
         tracker?.stop()
         tracker = null
-
         val finalState = mergeLaneOverlay(latestState ?: store.load()).copy(
             sensorLaneReady = false,
             laneExactClaim = false,
@@ -145,75 +142,86 @@ class DriveTrackingService : Service() {
         val lon = state.longitude ?: return
         if (!state.fixReceived || laneFetchInFlight) return
 
-        val baseUrl = laneApiSettings.getBaseUrl()
-        if (baseUrl.isBlank()) {
-            if (laneOverlay.status != "API NOT CONFIGURED") {
-                laneOverlay = LaneOverlay(status = "API NOT CONFIGURED")
-            }
-            return
-        }
-
-        if (baseUrl != cachedBaseUrl) {
-            synchronized(laneLock) {
-                cachedBaseUrl = baseUrl
-                cachedLanes = emptyList()
-                laneMatcher = LaneMatcher()
-                laneOverlay = LaneOverlay(status = "LANE API CONNECTING…")
-            }
-            lastLaneFetchElapsed = 0L
-        }
-
+        val current = GeoPoint(lat, lon)
         val now = SystemClock.elapsedRealtime()
-        if (now - lastLaneFetchElapsed < LANE_FETCH_INTERVAL_MS) return
+        val movedMeters = lastLaneFetchPoint?.let { distanceMeters(it, current) } ?: Double.POSITIVE_INFINITY
+        val hasCache = cachedLanes.isNotEmpty()
+        val minimumAge = if (hasCache) LANE_CACHE_MIN_AGE_MS else LANE_RETRY_MIN_AGE_MS
+        val minimumMove = if (hasCache) LANE_CACHE_REFRESH_DISTANCE_M else 0.0
+        if (now - lastLaneFetchElapsed < minimumAge && movedMeters < minimumMove) return
+
         lastLaneFetchElapsed = now
+        lastLaneFetchPoint = current
         laneFetchInFlight = true
-        laneOverlay = laneOverlay.copy(status = "LOADING OSM LANE CORRIDOR…")
+        laneOverlay = laneOverlay.copy(status = "LOADING OSM LANES DIRECTLY…")
 
         laneExecutor.execute {
             try {
-                val corridor = LaneApiClient(baseUrl).fetchOrImport(lat, lon, LANE_FETCH_RADIUS_M)
+                val corridor = DirectOsmLaneClient().fetchCorridor(lat, lon, LANE_FETCH_RADIUS_M)
                 synchronized(laneLock) {
                     cachedLanes = corridor.lanes
+                    laneMatcher = LaneMatcher()
                     laneOverlay = if (corridor.lanes.isEmpty()) {
-                        LaneOverlay(status = "NO USABLE OSM LANES NEARBY")
+                        LaneOverlay(status = "NO USABLE OSM LANE TAGS NEARBY")
                     } else {
                         LaneOverlay(
-                            status = "LANE DATA LOADED",
+                            status = "OSM LANE DATA LOADED",
                             candidateCount = corridor.lanes.size,
                         )
                     }
                 }
             } catch (exc: Exception) {
-                val detail = exc.message?.take(48)?.replace('\n', ' ') ?: exc.javaClass.simpleName
-                laneOverlay = LaneOverlay(status = "LANE API ERROR · $detail")
+                val detail = exc.message?.take(52)?.replace('\n', ' ') ?: exc.javaClass.simpleName
+                laneOverlay = laneOverlay.copy(status = "OSM DATA ERROR · $detail")
             } finally {
                 laneFetchInFlight = false
             }
 
-            val current = latestState ?: return@execute
-            val merged = applyLaneMatch(current)
+            val currentState = latestState ?: return@execute
+            val merged = applyLaneMatch(currentState)
             latestState = merged
             DriveSessionRuntime.publish(merged)
         }
     }
 
     private fun applyLaneMatch(state: GnssUiState): GnssUiState {
-        val lanes = cachedLanes
+        val allLanes = cachedLanes
         val lat = state.latitude
         val lon = state.longitude
         val accuracy = state.accuracyMeters
-        if (lanes.isEmpty() || lat == null || lon == null || accuracy == null) {
+        if (allLanes.isEmpty() || lat == null || lon == null || accuracy == null) {
             return mergeLaneOverlay(state)
         }
 
+        val position = GeoPoint(lat, lon)
+        val heading = (state.fusedHeadingDegrees ?: state.bearingDegrees)?.toDouble()
+        val nearby = allLanes.mapNotNull { lane ->
+            val distance = pointToPolylineMeters(position, lane.centerline)
+            if (distance > CANDIDATE_MAX_DISTANCE_M) return@mapNotNull null
+            val laneHeading = laneBearingDegreesNearPoint(lane, position)
+            val headingDiff = if (heading != null && laneHeading != null) angleDifferenceDegrees(heading, laneHeading) else 0.0
+            if (heading != null && laneHeading != null && headingDiff > CANDIDATE_MAX_HEADING_ERROR_DEG) return@mapNotNull null
+            Candidate(lane, distance, headingDiff)
+        }.sortedWith(compareBy<Candidate> { it.distanceMeters }.thenBy { it.headingErrorDegrees })
+            .take(CANDIDATE_LIMIT)
+
+        if (nearby.isEmpty()) {
+            laneOverlay = LaneOverlay(
+                status = "OSM LOADED · NO PLAUSIBLE LANE HERE",
+                candidateCount = 0,
+            )
+            return mergeLaneOverlay(state)
+        }
+
+        val lanes = nearby.map { it.lane }
         val estimate = synchronized(laneLock) {
             laneMatcher.update(
                 observation = Observation(
                     timestampMillis = state.lastUpdateMillis ?: System.currentTimeMillis(),
-                    position = GeoPoint(lat, lon),
+                    position = position,
                     horizontalAccuracyMeters = accuracy.toDouble(),
                     speedMps = (state.speedMps ?: 0f).toDouble(),
-                    bearingDegrees = (state.fusedHeadingDegrees ?: state.bearingDegrees)?.toDouble(),
+                    bearingDegrees = heading,
                     lateralAccelerationMps2 = state.lateralAccelerationMps2?.toDouble(),
                     sensorHeadingDegrees = state.sensorHeadingDegrees?.toDouble(),
                 ),
@@ -223,15 +231,15 @@ class DriveTrackingService : Service() {
 
         val topLane = lanes.firstOrNull { it.id == estimate.mostLikelyLaneId }
         if (topLane == null) {
-            laneOverlay = laneOverlay.copy(
+            laneOverlay = LaneOverlay(
                 status = "LANE CANDIDATES AVAILABLE · NO MATCH",
                 candidateCount = lanes.size,
             )
             return mergeLaneOverlay(state)
         }
 
-        val sameSegment = lanes.filter { it.segmentId == topLane.segmentId }
-        val exact = estimate.claimExactLane && state.sensorLaneReady
+        val sameSegment = allLanes.filter { it.segmentId == topLane.segmentId }
+        val exact = estimate.claimExactLane && state.sensorLaneReady && accuracy <= 5f
         val status = when {
             accuracy > 5f -> "UNCERTAIN · GNSS ${"%.1f".format(accuracy)} m"
             exact -> "EXACT-LANE CLAIM READY"
@@ -260,6 +268,69 @@ class DriveTrackingService : Service() {
         )
     }
 
+    private fun pointToPolylineMeters(point: GeoPoint, line: List<GeoPoint>): Double {
+        if (line.isEmpty()) return Double.POSITIVE_INFINITY
+        val lat0 = point.lat * PI / 180.0
+        fun xy(p: GeoPoint): Pair<Double, Double> {
+            val x = (p.lon - point.lon) * PI / 180.0 * EARTH_RADIUS_M * cos(lat0)
+            val y = (p.lat - point.lat) * PI / 180.0 * EARTH_RADIUS_M
+            return x to y
+        }
+        if (line.size == 1) {
+            val (x, y) = xy(line.first())
+            return hypot(x, y)
+        }
+        var best = Double.POSITIVE_INFINITY
+        for (i in 0 until line.lastIndex) {
+            val (ax, ay) = xy(line[i])
+            val (bx, by) = xy(line[i + 1])
+            val dx = bx - ax
+            val dy = by - ay
+            val denom = dx * dx + dy * dy
+            val t = if (denom <= 1e-9) 0.0 else ((-ax * dx - ay * dy) / denom).coerceIn(0.0, 1.0)
+            best = minOf(best, hypot(ax + t * dx, ay + t * dy))
+        }
+        return best
+    }
+
+    private fun laneBearingDegreesNearPoint(lane: Lane, point: GeoPoint): Double? {
+        if (lane.centerline.size < 2) return null
+        var bestIndex = 0
+        var bestDistance = Double.POSITIVE_INFINITY
+        for (i in 0 until lane.centerline.lastIndex) {
+            val segment = listOf(lane.centerline[i], lane.centerline[i + 1])
+            val d = pointToPolylineMeters(point, segment)
+            if (d < bestDistance) {
+                bestDistance = d
+                bestIndex = i
+            }
+        }
+        return initialBearingDegrees(lane.centerline[bestIndex], lane.centerline[bestIndex + 1])
+    }
+
+    private fun initialBearingDegrees(a: GeoPoint, b: GeoPoint): Double {
+        val p1 = a.lat * PI / 180.0
+        val p2 = b.lat * PI / 180.0
+        val dl = (b.lon - a.lon) * PI / 180.0
+        val y = sin(dl) * cos(p2)
+        val x = cos(p1) * sin(p2) - sin(p1) * cos(p2) * cos(dl)
+        return (atan2(y, x) * 180.0 / PI + 360.0) % 360.0
+    }
+
+    private fun angleDifferenceDegrees(a: Double, b: Double): Double {
+        val raw = abs((a - b + 180.0) % 360.0 - 180.0)
+        return if (raw > 180.0) 360.0 - raw else raw
+    }
+
+    private fun distanceMeters(a: GeoPoint, b: GeoPoint): Double {
+        val p1 = a.lat * PI / 180.0
+        val p2 = b.lat * PI / 180.0
+        val dp = (b.lat - a.lat) * PI / 180.0
+        val dl = (b.lon - a.lon) * PI / 180.0
+        val h = sin(dp / 2) * sin(dp / 2) + cos(p1) * cos(p2) * sin(dl / 2) * sin(dl / 2)
+        return 2.0 * EARTH_RADIUS_M * atan2(sqrt(h), sqrt(1.0 - h))
+    }
+
     private fun createNotificationChannel() {
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.createNotificationChannel(
@@ -268,7 +339,7 @@ class DriveTrackingService : Service() {
                 "Lane GPS drive recording",
                 NotificationManager.IMPORTANCE_LOW,
             ).apply {
-                description = "Keeps GNSS and motion-sensor drive tests recording with the screen off."
+                description = "Keeps GNSS, motion sensors, and lane matching active with the screen off."
                 setShowBadge(false)
             }
         )
@@ -277,16 +348,13 @@ class DriveTrackingService : Service() {
     private fun buildNotification(): Notification {
         val openIntent = Intent(this, MainActivity::class.java)
         val pendingIntent = PendingIntent.getActivity(
-            this,
-            0,
-            openIntent,
+            this, 0, openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
             .setContentTitle("Lane GPS drive test recording")
-            .setContentText("GNSS + motion + lane matching. Screen can be off.")
+            .setContentText("GNSS + motion + direct OSM lane matching. Screen can be off.")
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setCategory(Notification.CATEGORY_SERVICE)
@@ -306,14 +374,18 @@ class DriveTrackingService : Service() {
     }
 
     private fun releaseWakeLock() {
-        wakeLock?.let {
-            if (it.isHeld) it.release()
-        }
+        wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
     }
 
+    private data class Candidate(
+        val lane: Lane,
+        val distanceMeters: Double,
+        val headingErrorDegrees: Double,
+    )
+
     private data class LaneOverlay(
-        val status: String = "API NOT CONFIGURED",
+        val status: String = "OSM DIRECT · WAITING FOR LOCATION",
         val candidateCount: Int = 0,
         val laneNumberFromLeft: Int? = null,
         val laneCount: Int? = null,
@@ -330,7 +402,13 @@ class DriveTrackingService : Service() {
         private const val CHANNEL_ID = "lane_gps_drive_test"
         private const val NOTIFICATION_ID = 4107
         private const val PERSIST_INTERVAL_MS = 1000L
-        private const val LANE_FETCH_INTERVAL_MS = 15_000L
-        private const val LANE_FETCH_RADIUS_M = 900
+        private const val LANE_FETCH_RADIUS_M = 1600
+        private const val LANE_CACHE_MIN_AGE_MS = 120_000L
+        private const val LANE_RETRY_MIN_AGE_MS = 30_000L
+        private const val LANE_CACHE_REFRESH_DISTANCE_M = 850.0
+        private const val CANDIDATE_MAX_DISTANCE_M = 45.0
+        private const val CANDIDATE_MAX_HEADING_ERROR_DEG = 35.0
+        private const val CANDIDATE_LIMIT = 20
+        private const val EARTH_RADIUS_M = 6_371_000.0
     }
 }
