@@ -1,9 +1,12 @@
 package com.example.gps.location
 
+import android.content.ContentValues
 import android.content.Context
-import android.content.Intent
-import androidx.core.content.FileProvider
+import android.os.Environment
+import android.provider.MediaStore
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 class DriveTelemetryRecorder(context: Context) {
@@ -27,18 +30,32 @@ class DriveTelemetryRecorder(context: Context) {
 
     fun hasLog(): Boolean = logFile.exists() && logFile.length() > HEADER.length + 1
 
-    fun buildShareIntent(): Intent? {
+    fun exportToDownloads(): String? {
         if (!hasLog()) return null
-        val uri = FileProvider.getUriForFile(
-            appContext,
-            "${appContext.packageName}.fileprovider",
-            logFile,
-        )
-        return Intent(Intent.ACTION_SEND).apply {
-            type = "text/csv"
-            putExtra(Intent.EXTRA_STREAM, uri)
-            putExtra(Intent.EXTRA_SUBJECT, "Lane GPS drive telemetry")
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+
+        val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+        val displayName = "LaneGPS-drive-$timestamp.csv"
+        val resolver = appContext.contentResolver
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+            put(MediaStore.MediaColumns.MIME_TYPE, "text/csv")
+            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/LaneGPS")
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
+        }
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return null
+
+        return try {
+            resolver.openOutputStream(uri, "w")?.use { output ->
+                logFile.inputStream().use { input -> input.copyTo(output) }
+            } ?: error("Unable to open Downloads output")
+
+            values.clear()
+            values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+            resolver.update(uri, values, null, null)
+            displayName
+        } catch (_: Exception) {
+            resolver.delete(uri, null, null)
+            null
         }
     }
 
