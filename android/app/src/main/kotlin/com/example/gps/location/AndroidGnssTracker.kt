@@ -55,6 +55,10 @@ data class GnssUiState(
     val sessionRightLateralEvents: Int = 0,
     val sessionTurnEvents: Int = 0,
     val sessionCalibrationReached: Boolean = false,
+    val sessionRejectedMotionSpikes: Int = 0,
+    val sessionHeadingSamples: Int = 0,
+    val sessionAverageHeadingErrorDeg: Float = 0f,
+    val sessionPeakHeadingErrorDeg: Float = 0f,
 )
 
 class AndroidGnssTracker(
@@ -70,20 +74,24 @@ class AndroidGnssTracker(
     private var gpsProviderEnabled = false
     private var lastGpsFixElapsed = 0L
     private var qualityAccumulator = 0L
-    private var lastMotionBucket = ""
+    private var headingErrorAccumulator = 0.0
+    private var lastManeuverEventSequence = 0L
 
     private val motionFusion = MotionSensorFusion(appContext) { motion ->
-        val bucket = motion.motionHint
         var leftEvents = state.sessionLeftLateralEvents
         var rightEvents = state.sessionRightLateralEvents
         var turnEvents = state.sessionTurnEvents
-        if (bucket != lastMotionBucket) {
-            when (bucket) {
+
+        if (
+            motion.maneuverEventSequence != lastManeuverEventSequence &&
+            motion.maneuverEvent != null
+        ) {
+            when (motion.maneuverEvent) {
                 "LEFT LATERAL" -> leftEvents++
                 "RIGHT LATERAL" -> rightEvents++
                 "TURN / CURVE" -> turnEvents++
             }
-            lastMotionBucket = bucket
+            lastManeuverEventSequence = motion.maneuverEventSequence
         }
 
         state = state.copy(
@@ -108,6 +116,7 @@ class AndroidGnssTracker(
             sessionRightLateralEvents = rightEvents,
             sessionTurnEvents = turnEvents,
             sessionCalibrationReached = state.sessionCalibrationReached || motion.sensorFrameCalibrated,
+            sessionRejectedMotionSpikes = motion.rejectedSpikeCount,
         )
         publish()
     }
@@ -204,8 +213,15 @@ class AndroidGnssTracker(
     }
 
     fun refreshPermissionState() {
-        val fine = ContextCompat.checkSelfPermission(appContext, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        val coarse = ContextCompat.checkSelfPermission(appContext, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val fine = ContextCompat.checkSelfPermission(
+            appContext,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED
+        val coarse = ContextCompat.checkSelfPermission(
+            appContext,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED
+
         state = state.copy(
             permissionFine = fine,
             permissionCoarse = coarse,
@@ -213,7 +229,7 @@ class AndroidGnssTracker(
                 fine -> state.message
                 coarse -> "Approximate location granted — Precise is required for lane mode"
                 else -> "Location permission required"
-            }
+            },
         )
         publish()
     }
@@ -226,8 +242,16 @@ class AndroidGnssTracker(
         if (started) return
         started = true
 
-        gpsProviderEnabled = try { locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) } catch (_: Exception) { false }
-        val networkEnabled = try { locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER) } catch (_: Exception) { false }
+        gpsProviderEnabled = try {
+            locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+        } catch (_: Exception) {
+            false
+        }
+        val networkEnabled = try {
+            locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+        } catch (_: Exception) {
+            false
+        }
 
         state = state.copy(
             providerEnabled = gpsProviderEnabled || networkEnabled,
@@ -236,20 +260,34 @@ class AndroidGnssTracker(
                 gpsProviderEnabled -> "GNSS fix: waiting…"
                 networkEnabled -> "GPS disabled; using network location"
                 else -> "Location services are disabled"
-            }
+            },
         )
         publish()
 
         if (gpsProviderEnabled) {
-            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 250L, 0f, locationListener)
+            locationManager.requestLocationUpdates(
+                LocationManager.GPS_PROVIDER,
+                250L,
+                0f,
+                locationListener,
+            )
         }
         if (networkEnabled) {
-            locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 1000L, 0f, locationListener)
+            locationManager.requestLocationUpdates(
+                LocationManager.NETWORK_PROVIDER,
+                1000L,
+                0f,
+                locationListener,
+            )
         }
         if (state.permissionFine) {
             try {
-                locationManager.registerGnssStatusCallback(gnssCallback, android.os.Handler(appContext.mainLooper))
-            } catch (_: Exception) {}
+                locationManager.registerGnssStatusCallback(
+                    gnssCallback,
+                    android.os.Handler(appContext.mainLooper),
+                )
+            } catch (_: Exception) {
+            }
         }
     }
 
@@ -258,20 +296,36 @@ class AndroidGnssTracker(
             motionFusion.stop()
             return
         }
-        try { locationManager.removeUpdates(locationListener) } catch (_: Exception) {}
-        try { locationManager.unregisterGnssStatusCallback(gnssCallback) } catch (_: Exception) {}
+        try {
+            locationManager.removeUpdates(locationListener)
+        } catch (_: Exception) {
+        }
+        try {
+            locationManager.unregisterGnssStatusCallback(gnssCallback)
+        } catch (_: Exception) {
+        }
         motionFusion.stop()
         started = false
     }
 
     private fun anyProviderEnabled(): Boolean {
-        val gps = try { locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) } catch (_: Exception) { false }
-        val network = try { locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER) } catch (_: Exception) { false }
+        val gps = try {
+            locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+        } catch (_: Exception) {
+            false
+        }
+        val network = try {
+            locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+        } catch (_: Exception) {
+            false
+        }
         return gps || network
     }
 
     private fun publish(recordSample: Boolean = false) {
-        val fixAge = state.lastUpdateMillis?.let { (System.currentTimeMillis() - it).coerceAtLeast(0L) }
+        val fixAge = state.lastUpdateMillis?.let {
+            (System.currentTimeMillis() - it).coerceAtLeast(0L)
+        }
         val quality = GnssQualityEvaluator.evaluate(
             GnssQualityInput(
                 hasFix = state.fixReceived,
@@ -282,15 +336,19 @@ class AndroidGnssTracker(
                 satellitesVisible = state.satellitesVisible,
                 averageUsedCn0DbHz = state.averageUsedCn0DbHz?.toDouble(),
                 fixAgeMillis = fixAge,
-            )
+            ),
         )
 
-        val allRequiredSensors = state.rotationSensorAvailable && state.linearAccelerationAvailable && state.gyroscopeAvailable
-        val laneReady = quality.laneSensorsReady && state.sensorFrameCalibrated && allRequiredSensors
+        val allRequiredSensors =
+            state.rotationSensorAvailable &&
+                state.linearAccelerationAvailable &&
+                state.gyroscopeAvailable
+        val laneReady =
+            quality.laneSensorsReady && state.sensorFrameCalibrated && allRequiredSensors
         val reason = when {
             !quality.laneSensorsReady -> quality.reason
             !allRequiredSensors -> "Required motion sensor unavailable"
-            !state.sensorFrameCalibrated -> "Drive straight above 9 mph to learn phone-to-car frame"
+            !state.sensorFrameCalibrated -> "Drive straight above 11 mph to learn phone-to-car frame"
             else -> "Sensor gate ready; map lane graph still required"
         }
 
@@ -298,6 +356,10 @@ class AndroidGnssTracker(
         var bestAccuracy = state.sessionBestAccuracyMeters
         var worstAccuracy = state.sessionWorstAccuracyMeters
         var averageQuality = state.sessionAverageQuality
+        var headingSamples = state.sessionHeadingSamples
+        var averageHeadingError = state.sessionAverageHeadingErrorDeg
+        var peakHeadingError = state.sessionPeakHeadingErrorDeg
+
         if (recordSample && state.provider == LocationManager.GPS_PROVIDER) {
             samples++
             val accuracy = state.accuracyMeters
@@ -307,6 +369,22 @@ class AndroidGnssTracker(
             }
             qualityAccumulator += quality.score.toLong()
             averageQuality = if (samples > 0) (qualityAccumulator / samples).toInt() else 0
+
+            val gnssBearing = state.bearingDegrees
+            val fusedHeading = state.fusedHeadingDegrees
+            val movingFastEnough = (state.speedMps ?: 0f) >= 4.5f
+            if (
+                movingFastEnough &&
+                state.sensorFrameCalibrated &&
+                gnssBearing != null &&
+                fusedHeading != null
+            ) {
+                val headingError = angularDifferenceDegrees(gnssBearing, fusedHeading)
+                headingSamples++
+                headingErrorAccumulator += headingError.toDouble()
+                averageHeadingError = (headingErrorAccumulator / headingSamples).toFloat()
+                peakHeadingError = maxOf(peakHeadingError, headingError)
+            }
         }
 
         state = state.copy(
@@ -318,7 +396,16 @@ class AndroidGnssTracker(
             sessionBestAccuracyMeters = bestAccuracy,
             sessionWorstAccuracyMeters = worstAccuracy,
             sessionAverageQuality = averageQuality,
+            sessionHeadingSamples = headingSamples,
+            sessionAverageHeadingErrorDeg = averageHeadingError,
+            sessionPeakHeadingErrorDeg = peakHeadingError,
         )
         onState(state)
+    }
+
+    private fun angularDifferenceDegrees(a: Float, b: Float): Float {
+        var diff = abs(a - b) % 360f
+        if (diff > 180f) diff = 360f - diff
+        return diff
     }
 }
