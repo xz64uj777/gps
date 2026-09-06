@@ -79,7 +79,6 @@ class AndroidGnssTracker(
             val provider = location.provider ?: "unknown"
             val nowElapsed = SystemClock.elapsedRealtime()
 
-            // Prefer a recent direct GPS fix over a noisier network-location callback.
             if (
                 provider == LocationManager.NETWORK_PROVIDER &&
                 state.permissionFine &&
@@ -158,7 +157,7 @@ class AndroidGnssTracker(
             for (i in 0 until status.satelliteCount) {
                 if (status.usedInFix(i)) {
                     used++
-                    usedCn0Total += status.cn0DbHz(i)
+                    usedCn0Total += status.getCn0DbHz(i)
                 }
             }
             state = state.copy(
