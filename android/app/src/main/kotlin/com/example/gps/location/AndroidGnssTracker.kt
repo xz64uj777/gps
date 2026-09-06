@@ -64,18 +64,22 @@ data class GnssUiState(
 class AndroidGnssTracker(
     context: Context,
     private val onState: (GnssUiState) -> Unit,
+    initialState: GnssUiState = GnssUiState(),
 ) {
     private val appContext = context.applicationContext
     private val locationManager =
         appContext.getSystemService(Context.LOCATION_SERVICE) as LocationManager
 
-    private var state = GnssUiState()
+    private var state = initialState
     private var started = false
     private var gpsProviderEnabled = false
     private var lastGpsFixElapsed = 0L
-    private var qualityAccumulator = 0L
-    private var headingErrorAccumulator = 0.0
+    private var qualityAccumulator =
+        initialState.sessionAverageQuality.toLong() * initialState.sessionSamples.toLong()
+    private var headingErrorAccumulator =
+        initialState.sessionAverageHeadingErrorDeg.toDouble() * initialState.sessionHeadingSamples.toDouble()
     private var lastManeuverEventSequence = 0L
+    private val rejectedSpikeBase = initialState.sessionRejectedMotionSpikes
 
     private val motionFusion = MotionSensorFusion(appContext) { motion ->
         var leftEvents = state.sessionLeftLateralEvents
@@ -116,7 +120,7 @@ class AndroidGnssTracker(
             sessionRightLateralEvents = rightEvents,
             sessionTurnEvents = turnEvents,
             sessionCalibrationReached = state.sessionCalibrationReached || motion.sensorFrameCalibrated,
-            sessionRejectedMotionSpikes = motion.rejectedSpikeCount,
+            sessionRejectedMotionSpikes = rejectedSpikeBase + motion.rejectedSpikeCount,
         )
         publish()
     }
