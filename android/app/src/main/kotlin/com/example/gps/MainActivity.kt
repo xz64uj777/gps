@@ -9,20 +9,20 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.font.FontWeight
 import androidx.core.content.ContextCompat
 import com.example.gps.location.AndroidGnssTracker
 import com.example.gps.location.GnssUiState
@@ -53,11 +53,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        if (hasAnyLocationPermission()) {
-            tracker?.start()
-        } else {
-            requestLocationPermission()
-        }
+        if (hasAnyLocationPermission()) tracker?.start() else requestLocationPermission()
     }
 
     override fun onResume() {
@@ -95,10 +91,11 @@ private fun NavigationDebugScreen(
         Modifier
             .fillMaxSize()
             .background(Color(0xFF0D1117))
+            .verticalScroll(rememberScrollState())
             .padding(16.dp)
     ) {
         Text(
-            "Lane GPS · Live GNSS",
+            "Lane GPS · Sensor Fusion",
             color = Color.White,
             fontWeight = FontWeight.Bold,
             fontSize = 24.sp
@@ -116,65 +113,90 @@ private fun NavigationDebugScreen(
                 color = Color(0xFFFFCC80)
             )
             Spacer(Modifier.height(8.dp))
-            Button(onClick = requestPermission) {
-                Text("Request location permission")
-            }
+            Button(onClick = requestPermission) { Text("Request location permission") }
         }
 
         Spacer(Modifier.height(14.dp))
+        SectionTitle("GNSS")
         DebugRow("Latitude", state.latitude?.let { "%.7f".format(it) } ?: "—")
         DebugRow("Longitude", state.longitude?.let { "%.7f".format(it) } ?: "—")
         DebugRow("Accuracy", state.accuracyMeters?.let { "%.1f m".format(it) } ?: "—")
+        DebugRow("Quality", "${state.qualityScore}/100 · ${state.qualityLabel}")
+        DebugRow("Satellites", "${state.satellitesUsedInFix}/${state.satellitesVisible} used")
+        DebugRow("Signal", state.averageUsedCn0DbHz?.let { "%.1f dB-Hz avg".format(it) } ?: "—")
         DebugRow("Speed", state.speedMps?.let { "%.1f m/s".format(it) } ?: "—")
         DebugRow("Bearing", state.bearingDegrees?.let { "%.0f°".format(it) } ?: "—")
         DebugRow("Provider", state.provider ?: "—")
-        DebugRow("Satellites", "${state.satellitesUsedInFix}/${state.satellitesVisible} used")
         DebugRow("Precise", if (state.permissionFine) "YES" else "NO")
 
-        Spacer(Modifier.height(18.dp))
-
-        Text(
-            "Lane data: NOT LOADED",
-            color = Color(0xFFFFCC80),
-            fontWeight = FontWeight.Bold
+        Spacer(Modifier.height(14.dp))
+        SectionTitle("Motion fusion")
+        DebugRow("Sensor heading", state.sensorHeadingDegrees?.let { "%.0f°".format(it) } ?: "—")
+        DebugRow("Fused heading", state.fusedHeadingDegrees?.let { "%.0f°".format(it) } ?: "—")
+        DebugRow("Lateral accel", state.lateralAccelerationMps2?.let { "%+.2f m/s²".format(it) } ?: "—")
+        DebugRow("Yaw rate", state.yawRateDegS?.let { "%+.1f°/s".format(it) } ?: "—")
+        DebugRow("Motion", state.motionHint)
+        DebugRow("Frame calib.", if (state.sensorFrameCalibrated) "LEARNED" else "DRIVE STRAIGHT > 9 mph")
+        DebugRow(
+            "Sensors",
+            listOf(
+                if (state.rotationSensorAvailable) "ROT" else "no ROT",
+                if (state.linearAccelerationAvailable) "LIN" else "no LIN",
+                if (state.gyroscopeAvailable) "GYRO" else "no GYRO",
+            ).joinToString(" · ")
         )
+
+        Spacer(Modifier.height(16.dp))
         Text(
-            "The lane renderer below is still a visualization placeholder until the OSM lane graph is connected.",
+            if (state.sensorLaneReady) "SENSOR GATE: READY" else "SENSOR GATE: NOT READY",
+            color = if (state.sensorLaneReady) Color(0xFF7EE787) else Color(0xFFFFCC80),
+            fontWeight = FontWeight.Bold,
+            fontSize = 18.sp,
+        )
+        Text(state.qualityReason, color = Color(0xFFB8C1CC), fontSize = 13.sp)
+        Text(
+            "READY does not mean the exact lane is known. It only means the phone sensors are good enough to attempt lane matching once real road/lane geometry is loaded.",
+            color = Color(0xFF8B949E),
+            fontSize = 12.sp,
+        )
+
+        Spacer(Modifier.height(18.dp))
+        Text("Lane data: NOT LOADED", color = Color(0xFFFFCC80), fontWeight = FontWeight.Bold)
+        Text(
+            "No exact current-lane marker is drawn until the OSM lane graph is connected.",
             color = Color(0xFFB8C1CC),
             fontSize = 13.sp
         )
 
         Spacer(Modifier.height(8.dp))
-        Box(
-            Modifier.fillMaxWidth().weight(1f),
-            contentAlignment = Alignment.BottomCenter
-        ) {
-            ForwardLaneView(5, 2, setOf(1, 2))
+        Box(Modifier.fillMaxWidth().height(320.dp)) {
+            ForwardLaneView(laneCount = 5)
         }
     }
 }
 
 @Composable
+private fun SectionTitle(text: String) {
+    Text(text, color = Color(0xFF8ED7FF), fontWeight = FontWeight.Bold, fontSize = 15.sp)
+}
+
+@Composable
 private fun DebugRow(label: String, value: String) {
     Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
-        Text(label, color = Color(0xFF8B949E), modifier = Modifier.width(110.dp))
+        Text(label, color = Color(0xFF8B949E), modifier = Modifier.width(118.dp))
         Text(value, color = Color.White)
     }
 }
 
-private fun statusColor(state: GnssUiState): Color =
-    when {
-        state.fixReceived -> Color(0xFF7EE787)
-        !state.permissionFine -> Color(0xFFFFCC80)
-        else -> Color(0xFF8ED7FF)
-    }
+private fun statusColor(state: GnssUiState): Color = when {
+    state.sensorLaneReady -> Color(0xFF7EE787)
+    state.fixReceived -> Color(0xFF8ED7FF)
+    !state.permissionFine -> Color(0xFFFFCC80)
+    else -> Color(0xFF8ED7FF)
+}
 
 @Composable
-private fun ForwardLaneView(
-    laneCount: Int,
-    currentLaneIndex: Int,
-    recommendedLaneIndices: Set<Int>,
-) {
+private fun ForwardLaneView(laneCount: Int) {
     Canvas(Modifier.fillMaxSize()) {
         val horizonY = size.height * 0.16f
         val bottomY = size.height * 0.92f
@@ -195,28 +217,13 @@ private fun ForwardLaneView(
             )
         }
 
-        for (lane in recommendedLaneIndices) {
-            val left = lane.toFloat() / laneCount
-            val right = (lane + 1).toFloat() / laneCount
-            val path = Path().apply {
-                moveTo(centerX - horizonHalfWidth + 2 * horizonHalfWidth * left, horizonY)
-                lineTo(centerX - horizonHalfWidth + 2 * horizonHalfWidth * right, horizonY)
-                lineTo(centerX - bottomHalfWidth + 2 * bottomHalfWidth * right, bottomY)
-                lineTo(centerX - bottomHalfWidth + 2 * bottomHalfWidth * left, bottomY)
-                close()
-            }
-            drawPath(path, Color(0x4433B5E5))
+        val unknownBand = Path().apply {
+            moveTo(centerX - horizonHalfWidth, horizonY)
+            lineTo(centerX + horizonHalfWidth, horizonY)
+            lineTo(centerX + bottomHalfWidth, bottomY)
+            lineTo(centerX - bottomHalfWidth, bottomY)
+            close()
         }
-
-        val laneCenter = (currentLaneIndex + 0.5f) / laneCount
-        val carX = centerX - bottomHalfWidth + 2 * bottomHalfWidth * laneCenter
-        val carY = bottomY - 30f
-        drawCircle(Color.White, 14f, Offset(carX, carY))
-        drawCircle(
-            Color(0xFF33B5E5),
-            20f,
-            Offset(carX, carY),
-            style = Stroke(5f)
-        )
+        drawPath(unknownBand, Color(0x111F6FEB))
     }
 }

@@ -10,8 +10,8 @@ android {
         applicationId = "com.example.lanelevelgps"
         minSdk = 29
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = System.getenv("LANE_GPS_VERSION_CODE")?.toIntOrNull() ?: 1
+        versionName = System.getenv("LANE_GPS_VERSION_NAME") ?: "0.1.0"
     }
     buildFeatures { compose = true }
 }

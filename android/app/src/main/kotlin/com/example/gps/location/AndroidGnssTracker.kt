@@ -9,7 +9,10 @@ import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Bundle
+import android.os.SystemClock
 import androidx.core.content.ContextCompat
+import com.example.gps.laneengine.GnssQualityEvaluator
+import com.example.gps.laneengine.GnssQualityInput
 
 data class GnssUiState(
     val permissionFine: Boolean = false,
@@ -24,8 +27,22 @@ data class GnssUiState(
     val altitudeMeters: Double? = null,
     val satellitesVisible: Int = 0,
     val satellitesUsedInFix: Int = 0,
+    val averageUsedCn0DbHz: Float? = null,
     val provider: String? = null,
     val lastUpdateMillis: Long? = null,
+    val sensorHeadingDegrees: Float? = null,
+    val fusedHeadingDegrees: Float? = null,
+    val lateralAccelerationMps2: Float? = null,
+    val yawRateDegS: Float? = null,
+    val motionHint: String = "WAITING",
+    val sensorFrameCalibrated: Boolean = false,
+    val rotationSensorAvailable: Boolean = false,
+    val linearAccelerationAvailable: Boolean = false,
+    val gyroscopeAvailable: Boolean = false,
+    val qualityScore: Int = 0,
+    val qualityLabel: String = "UNAVAILABLE",
+    val sensorLaneReady: Boolean = false,
+    val qualityReason: String = "Waiting for GNSS fix",
     val message: String = "GNSS fix: waiting…",
 )
 
@@ -38,32 +55,80 @@ class AndroidGnssTracker(
         appContext.getSystemService(Context.LOCATION_SERVICE) as LocationManager
 
     private var state = GnssUiState()
+    private var started = false
+    private var gpsProviderEnabled = false
+    private var lastGpsFixElapsed = 0L
+
+    private val motionFusion = MotionSensorFusion(appContext) { motion ->
+        state = state.copy(
+            sensorHeadingDegrees = motion.sensorHeadingDegrees,
+            fusedHeadingDegrees = motion.fusedHeadingDegrees,
+            lateralAccelerationMps2 = motion.lateralAccelerationMps2,
+            yawRateDegS = motion.yawRateDegS,
+            motionHint = motion.motionHint,
+            sensorFrameCalibrated = motion.sensorFrameCalibrated,
+            rotationSensorAvailable = motion.rotationSensorAvailable,
+            linearAccelerationAvailable = motion.linearAccelerationAvailable,
+            gyroscopeAvailable = motion.gyroscopeAvailable,
+        )
+        publish()
+    }
 
     private val locationListener = object : LocationListener {
         override fun onLocationChanged(location: Location) {
+            val provider = location.provider ?: "unknown"
+            val nowElapsed = SystemClock.elapsedRealtime()
+
+            // Prefer a recent direct GPS fix over a noisier network-location callback.
+            if (
+                provider == LocationManager.NETWORK_PROVIDER &&
+                state.permissionFine &&
+                gpsProviderEnabled &&
+                nowElapsed - lastGpsFixElapsed < 5000L
+            ) {
+                return
+            }
+
+            if (provider == LocationManager.GPS_PROVIDER) {
+                lastGpsFixElapsed = nowElapsed
+            }
+
+            val bearing = if (location.hasBearing()) location.bearing else null
+            val speed = if (location.hasSpeed()) location.speed else null
+            motionFusion.updateGnss(bearing, speed)
+
             state = state.copy(
                 providerEnabled = true,
                 fixReceived = true,
                 latitude = location.latitude,
                 longitude = location.longitude,
                 accuracyMeters = if (location.hasAccuracy()) location.accuracy else null,
-                speedMps = if (location.hasSpeed()) location.speed else null,
-                bearingDegrees = if (location.hasBearing()) location.bearing else null,
+                speedMps = speed,
+                bearingDegrees = bearing,
                 altitudeMeters = if (location.hasAltitude()) location.altitude else null,
-                provider = location.provider,
+                provider = provider,
                 lastUpdateMillis = location.time,
-                message = "GNSS fix: OK",
+                message = if (provider == LocationManager.GPS_PROVIDER) "GNSS fix: OK" else "Network location fallback",
             )
             publish()
         }
 
         override fun onProviderEnabled(provider: String) {
-            state = state.copy(providerEnabled = true, message = "GNSS provider enabled; waiting for fix…")
+            if (provider == LocationManager.GPS_PROVIDER) gpsProviderEnabled = true
+            state = state.copy(
+                providerEnabled = anyProviderEnabled(),
+                message = if (state.fixReceived) state.message else "Location provider enabled; waiting for fix…",
+            )
             publish()
         }
 
         override fun onProviderDisabled(provider: String) {
-            state = state.copy(providerEnabled = false, fixReceived = false, message = "Location/GNSS is disabled")
+            if (provider == LocationManager.GPS_PROVIDER) gpsProviderEnabled = false
+            state = state.copy(
+                providerEnabled = anyProviderEnabled(),
+                sensorLaneReady = false,
+                message = if (anyProviderEnabled()) "GPS disabled; using fallback location" else "Location/GNSS is disabled",
+            )
             publish()
         }
 
@@ -78,7 +143,7 @@ class AndroidGnssTracker(
         }
 
         override fun onStopped() {
-            state = state.copy(message = "GNSS stopped")
+            state = state.copy(message = "GNSS stopped", sensorLaneReady = false)
             publish()
         }
 
@@ -89,12 +154,17 @@ class AndroidGnssTracker(
 
         override fun onSatelliteStatusChanged(status: GnssStatus) {
             var used = 0
+            var usedCn0Total = 0f
             for (i in 0 until status.satelliteCount) {
-                if (status.usedInFix(i)) used++
+                if (status.usedInFix(i)) {
+                    used++
+                    usedCn0Total += status.cn0DbHz(i)
+                }
             }
             state = state.copy(
                 satellitesVisible = status.satelliteCount,
                 satellitesUsedInFix = used,
+                averageUsedCn0DbHz = if (used > 0) usedCn0Total / used else null,
             )
             publish()
         }
@@ -124,9 +194,12 @@ class AndroidGnssTracker(
     @SuppressLint("MissingPermission")
     fun start() {
         refreshPermissionState()
+        motionFusion.start()
         if (!state.permissionFine && !state.permissionCoarse) return
+        if (started) return
+        started = true
 
-        val gpsEnabled = try {
+        gpsProviderEnabled = try {
             locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
         } catch (_: Exception) {
             false
@@ -138,20 +211,20 @@ class AndroidGnssTracker(
         }
 
         state = state.copy(
-            providerEnabled = gpsEnabled || networkEnabled,
+            providerEnabled = gpsProviderEnabled || networkEnabled,
             message = when {
                 !state.permissionFine -> "Approximate location granted — enable Precise for lane mode"
-                gpsEnabled -> "GNSS fix: waiting…"
+                gpsProviderEnabled -> "GNSS fix: waiting…"
                 networkEnabled -> "GPS disabled; using network location"
                 else -> "Location services are disabled"
             }
         )
         publish()
 
-        if (gpsEnabled) {
+        if (gpsProviderEnabled) {
             locationManager.requestLocationUpdates(
                 LocationManager.GPS_PROVIDER,
-                500L,
+                250L,
                 0f,
                 locationListener,
             )
@@ -178,6 +251,10 @@ class AndroidGnssTracker(
     }
 
     fun stop() {
+        if (!started) {
+            motionFusion.stop()
+            return
+        }
         try {
             locationManager.removeUpdates(locationListener)
         } catch (_: Exception) {
@@ -186,7 +263,46 @@ class AndroidGnssTracker(
             locationManager.unregisterGnssStatusCallback(gnssCallback)
         } catch (_: Exception) {
         }
+        motionFusion.stop()
+        started = false
     }
 
-    private fun publish() = onState(state)
+    private fun anyProviderEnabled(): Boolean {
+        val gps = try {
+            locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+        } catch (_: Exception) {
+            false
+        }
+        val network = try {
+            locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+        } catch (_: Exception) {
+            false
+        }
+        return gps || network
+    }
+
+    private fun publish() {
+        val fixAge = state.lastUpdateMillis?.let {
+            (System.currentTimeMillis() - it).coerceAtLeast(0L)
+        }
+        val quality = GnssQualityEvaluator.evaluate(
+            GnssQualityInput(
+                hasFix = state.fixReceived,
+                finePermission = state.permissionFine,
+                gpsProvider = state.provider == LocationManager.GPS_PROVIDER,
+                accuracyMeters = state.accuracyMeters?.toDouble(),
+                satellitesUsed = state.satellitesUsedInFix,
+                satellitesVisible = state.satellitesVisible,
+                averageUsedCn0DbHz = state.averageUsedCn0DbHz?.toDouble(),
+                fixAgeMillis = fixAge,
+            )
+        )
+        state = state.copy(
+            qualityScore = quality.score,
+            qualityLabel = quality.grade.name,
+            sensorLaneReady = quality.laneSensorsReady,
+            qualityReason = quality.reason,
+        )
+        onState(state)
+    }
 }

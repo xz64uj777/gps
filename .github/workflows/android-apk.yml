@@ -13,6 +13,9 @@ jobs:
   build-debug-apk:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      LANE_GPS_VERSION_CODE: ${{ github.run_number }}
+      LANE_GPS_VERSION_NAME: 0.1.${{ github.run_number }}
 
     steps:
       - name: Checkout repository
@@ -23,6 +26,30 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+
+      - name: Restore stable development debug signing key
+        if: github.event_name != 'pull_request'
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: lane-gps-debug-keystore-v1
+
+      - name: Ensure stable development debug signing key
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          mkdir -p "$HOME/.android"
+          if [ ! -f "$HOME/.android/debug.keystore" ]; then
+            keytool -genkeypair \
+              -keystore "$HOME/.android/debug.keystore" \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Lane GPS Development,O=Lane GPS,C=US"
+          fi
 
       - name: Set up Gradle 9.6.0
         uses: gradle/actions/setup-gradle@v6
