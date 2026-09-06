@@ -15,6 +15,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -26,15 +27,19 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.example.gps.lane.LaneApiSettings
 import com.example.gps.location.DriveSessionRuntime
 import com.example.gps.location.DriveSessionStore
 import com.example.gps.location.DriveTrackingService
 import com.example.gps.location.GnssUiState
+import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
     private lateinit var store: DriveSessionStore
+    private lateinit var laneApiSettings: LaneApiSettings
     private var uiState by mutableStateOf(GnssUiState())
     private var sessionActive by mutableStateOf(false)
+    private var laneApiUrl by mutableStateOf("")
     private var pendingStart = false
 
     private val runtimeListener: (GnssUiState) -> Unit = { state ->
@@ -54,6 +59,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         store = DriveSessionStore(this)
+        laneApiSettings = LaneApiSettings(this)
+        laneApiUrl = laneApiSettings.getBaseUrl()
         uiState = DriveSessionRuntime.latest() ?: store.load()
         sessionActive = store.isActive()
 
@@ -62,6 +69,9 @@ class MainActivity : ComponentActivity() {
                 NavigationDebugScreen(
                     state = uiState,
                     sessionActive = sessionActive,
+                    laneApiUrl = laneApiUrl,
+                    onLaneApiUrlChange = { laneApiUrl = it },
+                    saveLaneApiUrl = { saveLaneApiUrl() },
                     requestPermission = { requestPermissionsForDrive(startAfterGrant = false) },
                     startDrive = { startDriveTest() },
                     stopDrive = { stopDriveTest() },
@@ -86,13 +96,22 @@ class MainActivity : ComponentActivity() {
         super.onStop()
     }
 
+    private fun saveLaneApiUrl() {
+        laneApiSettings.setBaseUrl(laneApiUrl)
+        laneApiUrl = laneApiSettings.getBaseUrl()
+    }
+
     private fun startDriveTest() {
         val needsNotificationPermission =
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                 ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
                 PackageManager.PERMISSION_GRANTED
+        val needsLocalNetworkPermission =
+            Build.VERSION.SDK_INT >= 37 &&
+                ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_LOCAL_NETWORK) !=
+                PackageManager.PERMISSION_GRANTED
 
-        if (!hasFineLocationPermission() || needsNotificationPermission) {
+        if (!hasFineLocationPermission() || needsNotificationPermission || needsLocalNetworkPermission) {
             requestPermissionsForDrive(startAfterGrant = true)
         } else {
             startDriveTestInternal()
@@ -134,6 +153,9 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions += Manifest.permission.POST_NOTIFICATIONS
         }
+        if (Build.VERSION.SDK_INT >= 37) {
+            permissions += Manifest.permission.ACCESS_LOCAL_NETWORK
+        }
         permissionLauncher.launch(permissions.toTypedArray())
     }
 }
@@ -142,6 +164,9 @@ class MainActivity : ComponentActivity() {
 private fun NavigationDebugScreen(
     state: GnssUiState,
     sessionActive: Boolean,
+    laneApiUrl: String,
+    onLaneApiUrlChange: (String) -> Unit,
+    saveLaneApiUrl: () -> Unit,
     requestPermission: () -> Unit,
     startDrive: () -> Unit,
     stopDrive: () -> Unit,
@@ -153,7 +178,7 @@ private fun NavigationDebugScreen(
             .verticalScroll(rememberScrollState())
             .padding(16.dp)
     ) {
-        Text("Lane GPS · Durable Drive Test", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 24.sp)
+        Text("Lane GPS · Live Lane Match", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 24.sp)
         Spacer(Modifier.height(8.dp))
         Text(state.message, color = statusColor(state), fontSize = 18.sp)
 
@@ -191,6 +216,24 @@ private fun NavigationDebugScreen(
             Spacer(Modifier.height(8.dp))
             Button(onClick = requestPermission) { Text("Request permissions") }
         }
+
+        Spacer(Modifier.height(16.dp))
+        SectionTitle("Lane API")
+        OutlinedTextField(
+            value = laneApiUrl,
+            onValueChange = onLaneApiUrlChange,
+            label = { Text("Backend URL") },
+            placeholder = { Text("http://192.168.1.50:8080") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(6.dp))
+        Button(onClick = saveLaneApiUrl) { Text("SAVE LANE API URL") }
+        Text(
+            "Development mode: enter the Lane GPS backend address on the same Wi-Fi network. The app will fetch a nearby OSM corridor and ask the local dev API to populate it when empty.",
+            color = Color(0xFFB8C1CC),
+            fontSize = 12.sp,
+        )
 
         Spacer(Modifier.height(14.dp))
         SectionTitle("GNSS")
@@ -232,6 +275,30 @@ private fun NavigationDebugScreen(
         Text(state.qualityReason, color = Color(0xFFB8C1CC), fontSize = 13.sp)
 
         Spacer(Modifier.height(18.dp))
+        SectionTitle("Lane matching")
+        DebugRow("Map status", state.laneDataStatus)
+        DebugRow("Candidates", state.laneCandidateCount.toString())
+        val likelyLane = if (state.likelyLaneNumberFromLeft != null && state.likelyLaneCount != null) {
+            "${state.likelyLaneNumberFromLeft} of ${state.likelyLaneCount} from left"
+        } else {
+            "—"
+        }
+        DebugRow("Likely lane", likelyLane)
+        DebugRow(
+            "Confidence",
+            if (state.likelyLaneNumberFromLeft != null) "${(state.laneConfidence * 100f).roundToInt()}%" else "—",
+        )
+        Text(
+            if (state.laneExactClaim)
+                "EXACT-LANE CLAIM ACTIVE · lane highlight is allowed"
+            else
+                "UNCERTAIN · no exact lane highlight until GNSS, sensors, map data, and matcher confidence all agree",
+            color = if (state.laneExactClaim) Color(0xFF7EE787) else Color(0xFFFFCC80),
+            fontWeight = FontWeight.Bold,
+            fontSize = 13.sp,
+        )
+
+        Spacer(Modifier.height(18.dp))
         SectionTitle("Drive test summary")
         DebugRow("GPS samples", state.sessionSamples.toString())
         DebugRow("Best accuracy", state.sessionBestAccuracyMeters?.let { "%.1f m".format(it) } ?: "—")
@@ -254,21 +321,20 @@ private fun NavigationDebugScreen(
         DebugRow("Spikes reject", state.sessionRejectedMotionSpikes.toString())
         DebugRow("Calibrated", if (state.sessionCalibrationReached) "YES" else "NO")
         Text(
-            "Once stopped, these totals are stored on the phone and survive app restarts. You can come back later and send the summary.",
+            "Once stopped, these totals are stored on the phone and survive app restarts.",
             color = Color(0xFF7EE787),
             fontSize = 13.sp,
             fontWeight = FontWeight.Bold,
         )
 
         Spacer(Modifier.height(18.dp))
-        Text("Lane data: NOT LOADED", color = Color(0xFFFFCC80), fontWeight = FontWeight.Bold)
-        Text(
-            "No exact current-lane marker is drawn until the OSM lane graph is connected.",
-            color = Color(0xFFB8C1CC),
-            fontSize = 13.sp,
-        )
-        Spacer(Modifier.height(8.dp))
-        Box(Modifier.fillMaxWidth().height(320.dp)) { ForwardLaneView(laneCount = 5) }
+        val laneCount = state.likelyLaneCount?.coerceIn(1, 8) ?: 5
+        Box(Modifier.fillMaxWidth().height(320.dp)) {
+            ForwardLaneView(
+                laneCount = laneCount,
+                exactLaneNumberFromLeft = if (state.laneExactClaim) state.likelyLaneNumberFromLeft else null,
+            )
+        }
     }
 }
 
@@ -286,6 +352,7 @@ private fun DebugRow(label: String, value: String) {
 }
 
 private fun statusColor(state: GnssUiState): Color = when {
+    state.laneExactClaim -> Color(0xFF7EE787)
     state.sensorLaneReady -> Color(0xFF7EE787)
     state.fixReceived -> Color(0xFF8ED7FF)
     !state.permissionFine -> Color(0xFFFFCC80)
@@ -293,13 +360,31 @@ private fun statusColor(state: GnssUiState): Color = when {
 }
 
 @Composable
-private fun ForwardLaneView(laneCount: Int) {
+private fun ForwardLaneView(laneCount: Int, exactLaneNumberFromLeft: Int?) {
     Canvas(Modifier.fillMaxSize()) {
         val horizonY = size.height * 0.16f
         val bottomY = size.height * 0.92f
         val horizonHalfWidth = size.width * 0.12f
         val bottomHalfWidth = size.width * 0.48f
         val centerX = size.width / 2f
+
+        val exactIndex = exactLaneNumberFromLeft?.minus(1)
+        if (exactIndex != null && exactIndex in 0 until laneCount) {
+            val leftT = exactIndex.toFloat() / laneCount
+            val rightT = (exactIndex + 1).toFloat() / laneCount
+            val topLeft = centerX - horizonHalfWidth + 2 * horizonHalfWidth * leftT
+            val topRight = centerX - horizonHalfWidth + 2 * horizonHalfWidth * rightT
+            val bottomLeft = centerX - bottomHalfWidth + 2 * bottomHalfWidth * leftT
+            val bottomRight = centerX - bottomHalfWidth + 2 * bottomHalfWidth * rightT
+            val band = Path().apply {
+                moveTo(topLeft, horizonY)
+                lineTo(topRight, horizonY)
+                lineTo(bottomRight, bottomY)
+                lineTo(bottomLeft, bottomY)
+                close()
+            }
+            drawPath(band, Color(0x553FB950))
+        }
 
         for (i in 0..laneCount) {
             val t = i.toFloat() / laneCount
@@ -313,14 +398,5 @@ private fun ForwardLaneView(laneCount: Int) {
                 cap = StrokeCap.Round,
             )
         }
-
-        val unknownBand = Path().apply {
-            moveTo(centerX - horizonHalfWidth, horizonY)
-            lineTo(centerX + horizonHalfWidth, horizonY)
-            lineTo(centerX + bottomHalfWidth, bottomY)
-            lineTo(centerX - bottomHalfWidth, bottomY)
-            close()
-        }
-        drawPath(unknownBand, Color(0x111F6FEB))
     }
 }
