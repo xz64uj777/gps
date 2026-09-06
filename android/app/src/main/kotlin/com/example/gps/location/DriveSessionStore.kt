@@ -46,8 +46,24 @@ class DriveSessionStore(context: Context) {
             .putInt(KEY_LAST_QUALITY, state.qualityScore)
             .putString(KEY_LAST_QUALITY_LABEL, state.qualityLabel)
             .commit()
+
         telemetry.append(state)
+
+        if (
+            state.message.startsWith("Drive test stopped") &&
+            !prefs.getBoolean(KEY_LOG_EXPORTED, false)
+        ) {
+            val exportedName = telemetry.exportToDownloads()
+            if (exportedName != null) {
+                prefs.edit()
+                    .putBoolean(KEY_LOG_EXPORTED, true)
+                    .putString(KEY_LOG_EXPORTED_NAME, exportedName)
+                    .commit()
+            }
+        }
     }
+
+    fun lastExportedLogName(): String? = prefs.getString(KEY_LOG_EXPORTED_NAME, null)
 
     fun load(): GnssUiState {
         val active = isActive()
@@ -106,5 +122,7 @@ class DriveSessionStore(context: Context) {
         const val KEY_PEAK_HEADING_ERROR = "peak_heading_error"
         const val KEY_LAST_QUALITY = "last_quality"
         const val KEY_LAST_QUALITY_LABEL = "last_quality_label"
+        const val KEY_LOG_EXPORTED = "log_exported"
+        const val KEY_LOG_EXPORTED_NAME = "log_exported_name"
     }
 }
