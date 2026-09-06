@@ -20,6 +20,7 @@ services:
     build: ./backend
     environment:
       DATABASE_URL: postgresql://gps:gps@db:5432/gps
+      LANE_GPS_DEV_IMPORT: "true"
     ports:
       - "8080:8080"
     depends_on:
