@@ -83,18 +83,77 @@ class DirectOsmLaneClient(
             val oneway = tags["oneway"]?.lowercase()?.trim().orEmpty()
             when (oneway) {
                 "yes", "1", "true" -> {
-                    addDirection(lanes, wayId, 1, base, laneSpecs(tags, Direction.FORWARD, allowGenericCount = true))
+                    val specs = laneSpecs(tags, Direction.FORWARD, allowGenericCount = true)
+                    addDirection(lanes, wayId, 1, base, specs)
                 }
                 "-1" -> {
-                    addDirection(lanes, wayId, -1, base.asReversed(), laneSpecs(tags, Direction.BACKWARD, allowGenericCount = true))
+                    val specs = laneSpecs(tags, Direction.BACKWARD, allowGenericCount = true)
+                    addDirection(lanes, wayId, -1, base.asReversed(), specs)
                 }
-                else -> {
-                    addDirection(lanes, wayId, 1, base, laneSpecs(tags, Direction.FORWARD, allowGenericCount = false))
-                    addDirection(lanes, wayId, -1, base.asReversed(), laneSpecs(tags, Direction.BACKWARD, allowGenericCount = false))
-                }
+                else -> addTwoWayRoad(lanes, wayId, base, tags)
             }
         }
         return Corridor(lanes)
+    }
+
+    private fun addTwoWayRoad(
+        output: MutableList<Lane>,
+        wayId: Long,
+        base: List<GeoPoint>,
+        tags: Map<String, String>,
+    ) {
+        val total = tags["lanes"]?.toIntOrNull()?.coerceIn(1, 12)
+        val explicitForward = tags["lanes:forward"]?.toIntOrNull()?.coerceIn(1, 8)
+        val explicitBackward = tags["lanes:backward"]?.toIntOrNull()?.coerceIn(1, 8)
+
+        // A very common OSM pattern on ordinary two-way roads is only `lanes=2`
+        // (or 4, etc.) without directional lane-count tags. The old parser ignored
+        // those roads entirely. Infer directional travel-lane counts conservatively.
+        // For odd totals, leave the center lane unassigned because it is often a
+        // shared/turn lane and cannot safely be attributed to either direction.
+        val forwardCount = explicitForward ?: when {
+            total != null && explicitBackward != null && total > explicitBackward -> total - explicitBackward
+            total != null && total >= 2 -> total / 2
+            else -> null
+        }
+        val backwardCount = explicitBackward ?: when {
+            total != null && explicitForward != null && total > explicitForward -> total - explicitForward
+            total != null && total >= 2 -> total / 2
+            else -> null
+        }
+
+        if (forwardCount == null || backwardCount == null || forwardCount < 1 || backwardCount < 1) return
+
+        val forwardInferred = explicitForward == null
+        val backwardInferred = explicitBackward == null
+        val forwardSpecs = laneSpecsForCount(tags, Direction.FORWARD, forwardCount, forwardInferred)
+        val backwardSpecs = laneSpecsForCount(tags, Direction.BACKWARD, backwardCount, backwardInferred)
+
+        // OSM road geometry is normally near the road center. In right-hand traffic,
+        // each direction occupies the right side of its own travel direction. Since
+        // the backward geometry is reversed below, the same signed offset places the
+        // two directions on opposite physical sides of the road.
+        val leftHandTraffic = tags["driving_side"]?.trim()?.lowercase() == "left"
+        val side = if (leftHandTraffic) 1.0 else -1.0
+        val forwardGroupOffset = side * forwardCount * DEFAULT_LANE_WIDTH_M / 2.0
+        val backwardGroupOffset = side * backwardCount * DEFAULT_LANE_WIDTH_M / 2.0
+
+        addDirection(
+            output = output,
+            wayId = wayId,
+            direction = 1,
+            travelLine = base,
+            specs = forwardSpecs,
+            groupCenterOffsetMeters = forwardGroupOffset,
+        )
+        addDirection(
+            output = output,
+            wayId = wayId,
+            direction = -1,
+            travelLine = base.asReversed(),
+            specs = backwardSpecs,
+            groupCenterOffsetMeters = backwardGroupOffset,
+        )
     }
 
     private fun laneSpecs(
@@ -105,15 +164,29 @@ class DirectOsmLaneClient(
         val suffix = if (direction == Direction.FORWARD) "forward" else "backward"
         val rawCount = tags["lanes:$suffix"] ?: if (allowGenericCount) tags["lanes"] else null
         val count = rawCount?.toIntOrNull()?.coerceIn(1, 8) ?: return emptyList()
+        return laneSpecsForCount(tags, direction, count, inferredDirectionalCount = false, allowGenericMetadata = allowGenericCount)
+    }
 
-        val turnValues = (tags["turn:lanes:$suffix"] ?: tags["turn:lanes"])
-            ?.split('|')
-            .orEmpty()
-        val changeValues = (tags["change:lanes:$suffix"] ?: tags["change:lanes"])
-            ?.split('|')
-            .orEmpty()
+    private fun laneSpecsForCount(
+        tags: Map<String, String>,
+        direction: Direction,
+        count: Int,
+        inferredDirectionalCount: Boolean,
+        allowGenericMetadata: Boolean = false,
+    ): List<LaneSpec> {
+        val suffix = if (direction == Direction.FORWARD) "forward" else "backward"
+        val turnValues = (
+            tags["turn:lanes:$suffix"] ?: if (allowGenericMetadata) tags["turn:lanes"] else null
+        )?.split('|').orEmpty()
+        val changeValues = (
+            tags["change:lanes:$suffix"] ?: if (allowGenericMetadata) tags["change:lanes"] else null
+        )?.split('|').orEmpty()
         val explicitTurns = turnValues.size == count
-        val baseConfidence = if (explicitTurns) 0.95 else 0.70
+        val baseConfidence = when {
+            explicitTurns && !inferredDirectionalCount -> 0.95
+            !inferredDirectionalCount -> 0.80
+            else -> 0.60
+        }
 
         return List(count) { index ->
             val change = changeValues.getOrNull(index)?.trim().orEmpty()
@@ -132,12 +205,14 @@ class DirectOsmLaneClient(
         direction: Int,
         travelLine: List<GeoPoint>,
         specs: List<LaneSpec>,
+        groupCenterOffsetMeters: Double = 0.0,
     ) {
         if (specs.isEmpty()) return
         val count = specs.size
         val segmentId = "osm:$wayId:$direction"
         for (spec in specs) {
-            val offsetMeters = ((count - 1) / 2.0 - spec.index) * DEFAULT_LANE_WIDTH_M
+            val withinDirectionOffset = ((count - 1) / 2.0 - spec.index) * DEFAULT_LANE_WIDTH_M
+            val offsetMeters = groupCenterOffsetMeters + withinDirectionOffset
             output += Lane(
                 id = "$segmentId:${spec.index}",
                 segmentId = segmentId,
@@ -165,7 +240,7 @@ class DirectOsmLaneClient(
             if (length < 0.01) {
                 current
             } else {
-                // Left-hand normal relative to travel direction.
+                // Positive offset is the left-hand normal relative to travel direction.
                 val east = (-dy / length) * offsetMeters
                 val north = (dx / length) * offsetMeters
                 GeoPoint(
