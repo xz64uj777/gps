@@ -7,6 +7,7 @@ class LaneMatcher(
     private val exactLaneThreshold: Double = 0.70,
     private val highConfidenceThreshold: Double = 0.85,
     private val maxExactLaneAccuracyMeters: Double = 5.0,
+    private val minExactLaneSourceConfidence: Double = 0.75,
     private val laneChangeConfirmationFixes: Int = 3,
     private val exactLaneStableFixes: Int = 3,
 ) {
@@ -119,11 +120,15 @@ class LaneMatcher(
             (0.65 * selectedProbability + 0.25 * separation + 0.10 * gpsQuality)
                 .coerceIn(0.0, 1.0)
 
+        val selectedSourceConfidence =
+            candidates.firstOrNull { it.id == selectedLaneId }?.sourceConfidence ?: 0.0
         val accuracyAllowsExactLane =
             observation.horizontalAccuracyMeters <= maxExactLaneAccuracyMeters
+        val sourceAllowsExactLane = selectedSourceConfidence >= minExactLaneSourceConfidence
         val exactLane =
             confidence >= exactLaneThreshold &&
                 accuracyAllowsExactLane &&
+                sourceAllowsExactLane &&
                 stableLaneFixes >= exactLaneStableFixes &&
                 !transitionPending
 
