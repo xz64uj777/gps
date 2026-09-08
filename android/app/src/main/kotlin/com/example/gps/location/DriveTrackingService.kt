@@ -21,7 +21,6 @@ import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
-import kotlin.math.exp
 import kotlin.math.hypot
 import kotlin.math.sin
 import kotlin.math.sqrt
@@ -38,8 +37,10 @@ class DriveTrackingService : Service() {
     private var laneMatcher = LaneMatcher()
     @Volatile private var cachedLanes: List<Lane> = emptyList()
     @Volatile private var laneFetchInFlight = false
-    private var lastLaneFetchElapsed = 0L
+    private var lastLaneFetchSuccessElapsed = 0L
+    private var lastLaneFetchAttemptElapsed = 0L
     private var lastLaneFetchPoint: GeoPoint? = null
+    @Volatile private var laneFetchStatus = "WAITING"
     @Volatile private var laneOverlay = LaneOverlay(status = "OSM DIRECT · WAITING FOR LOCATION")
 
     override fun onCreate() {
@@ -88,8 +89,10 @@ class DriveTrackingService : Service() {
                 laneMatcher = LaneMatcher()
                 cachedLanes = emptyList()
                 laneOverlay = LaneOverlay(status = "OSM DIRECT · WAITING FOR LOCATION")
+                laneFetchStatus = "WAITING"
                 lastLaneFetchPoint = null
-                lastLaneFetchElapsed = 0L
+                lastLaneFetchSuccessElapsed = 0L
+                lastLaneFetchAttemptElapsed = 0L
             }
         }
         if (tracker != null) return
@@ -144,43 +147,74 @@ class DriveTrackingService : Service() {
 
         val current = GeoPoint(lat, lon)
         val now = SystemClock.elapsedRealtime()
+        if (now - lastLaneFetchAttemptElapsed < LANE_FETCH_ATTEMPT_BACKOFF_MS) return
+
         val movedMeters = lastLaneFetchPoint?.let { distanceMeters(it, current) } ?: Double.POSITIVE_INFINITY
         val hasCache = cachedLanes.isNotEmpty()
         val minimumAge = if (hasCache) LANE_CACHE_MIN_AGE_MS else LANE_RETRY_MIN_AGE_MS
         val minimumMove = if (hasCache) LANE_CACHE_REFRESH_DISTANCE_M else 0.0
-        if (now - lastLaneFetchElapsed < minimumAge && movedMeters < minimumMove) return
+        if (
+            lastLaneFetchSuccessElapsed > 0L &&
+            now - lastLaneFetchSuccessElapsed < minimumAge &&
+            movedMeters < minimumMove
+        ) return
 
-        lastLaneFetchElapsed = now
-        lastLaneFetchPoint = current
+        lastLaneFetchAttemptElapsed = now
         laneFetchInFlight = true
+        laneFetchStatus = "LOADING"
         laneOverlay = laneOverlay.copy(status = "LOADING OSM LANES DIRECTLY…")
 
         laneExecutor.execute {
             try {
                 val corridor = DirectOsmLaneClient().fetchCorridor(lat, lon, LANE_FETCH_RADIUS_M)
+                val endpointHost = corridor.endpoint
+                    .substringAfter("://")
+                    .substringBefore('/')
+                    .take(30)
                 synchronized(laneLock) {
-                    cachedLanes = corridor.lanes
-                    laneMatcher = LaneMatcher()
-                    laneOverlay = if (corridor.lanes.isEmpty()) {
-                        LaneOverlay(status = "NO USABLE OSM LANE TAGS NEARBY")
+                    val merged = mergeLaneCache(
+                        existing = cachedLanes,
+                        incoming = corridor.lanes,
+                        anchor = current,
+                    )
+                    cachedLanes = merged
+                    laneFetchStatus = "OK $endpointHost +${corridor.lanes.size} cache${merged.size}"
+                    lastLaneFetchSuccessElapsed = SystemClock.elapsedRealtime()
+                    lastLaneFetchPoint = current
+                    laneOverlay = if (merged.isEmpty()) {
+                        LaneOverlay(status = "NO USABLE OSM ROAD/LANE DATA NEARBY · FETCH $laneFetchStatus")
                     } else {
                         LaneOverlay(
-                            status = "OSM LANE DATA LOADED",
-                            candidateCount = corridor.lanes.size,
+                            status = "OSM LANE DATA LOADED · FETCH $laneFetchStatus",
+                            candidateCount = merged.size,
                         )
                     }
                 }
             } catch (exc: Exception) {
-                val detail = exc.message?.take(52)?.replace('\n', ' ') ?: exc.javaClass.simpleName
+                val detail = exc.message?.take(90)?.replace('\n', ' ') ?: exc.javaClass.simpleName
+                laneFetchStatus = "ERROR $detail"
                 laneOverlay = laneOverlay.copy(status = "OSM DATA ERROR · $detail")
             } finally {
                 laneFetchInFlight = false
             }
 
             val currentState = latestState ?: return@execute
-            val merged = applyLaneMatch(currentState)
-            latestState = merged
-            DriveSessionRuntime.publish(merged)
+            val mergedState = applyLaneMatch(currentState)
+            latestState = mergedState
+            DriveSessionRuntime.publish(mergedState)
+        }
+    }
+
+    private fun mergeLaneCache(
+        existing: List<Lane>,
+        incoming: List<Lane>,
+        anchor: GeoPoint,
+    ): List<Lane> {
+        val merged = LinkedHashMap<String, Lane>()
+        existing.forEach { merged[it.id] = it }
+        incoming.forEach { merged[it.id] = it }
+        return merged.values.filter { lane ->
+            pointToPolylineMeters(anchor, lane.centerline) <= LANE_CACHE_RETAIN_DISTANCE_M
         }
     }
 
@@ -195,19 +229,33 @@ class DriveTrackingService : Service() {
 
         val position = GeoPoint(lat, lon)
         val heading = (state.fusedHeadingDegrees ?: state.bearingDegrees)?.toDouble()
-        val nearby = allLanes.mapNotNull { lane ->
+        val measured = allLanes.map { lane ->
             val distance = pointToPolylineMeters(position, lane.centerline)
-            if (distance > CANDIDATE_MAX_DISTANCE_M) return@mapNotNull null
             val laneHeading = laneBearingDegreesNearPoint(lane, position)
-            val headingDiff = if (heading != null && laneHeading != null) angleDifferenceDegrees(heading, laneHeading) else 0.0
-            if (heading != null && laneHeading != null && headingDiff > CANDIDATE_MAX_HEADING_ERROR_DEG) return@mapNotNull null
+            val headingDiff =
+                if (heading != null && laneHeading != null) angleDifferenceDegrees(heading, laneHeading)
+                else 0.0
             Candidate(lane, distance, headingDiff)
-        }.sortedWith(compareBy<Candidate> { it.distanceMeters }.thenBy { it.headingErrorDegrees })
+        }
+        val withinDistance = measured.filter { it.distanceMeters <= CANDIDATE_MAX_DISTANCE_M }
+        val nearby = withinDistance
+            .filter { candidate ->
+                heading == null || candidate.headingErrorDegrees <= CANDIDATE_MAX_HEADING_ERROR_DEG
+            }
+            .sortedWith(compareBy<Candidate> { it.distanceMeters }.thenBy { it.headingErrorDegrees })
             .take(CANDIDATE_LIMIT)
 
         if (nearby.isEmpty()) {
+            val rejection = if (withinDistance.isEmpty()) {
+                val nearest = measured.minOfOrNull { it.distanceMeters }
+                if (nearest == null || !nearest.isFinite()) "DISTANCE_UNKNOWN"
+                else "DISTANCE_${String.format(java.util.Locale.US, "%.0f", nearest)}m"
+            } else {
+                val smallestHeadingError = withinDistance.minOfOrNull { it.headingErrorDegrees } ?: 999.0
+                "HEADING_${String.format(java.util.Locale.US, "%.0f", smallestHeadingError)}deg"
+            }
             laneOverlay = LaneOverlay(
-                status = "OSM LOADED · NO PLAUSIBLE LANE HERE · BLOCK NO_CANDIDATE",
+                status = "OSM LOADED · NO PLAUSIBLE LANE · BLOCK $rejection · FETCH $laneFetchStatus",
                 candidateCount = 0,
             )
             return mergeLaneOverlay(state)
@@ -232,7 +280,7 @@ class DriveTrackingService : Service() {
         val topLane = lanes.firstOrNull { it.id == estimate.mostLikelyLaneId }
         if (topLane == null) {
             laneOverlay = LaneOverlay(
-                status = "LANE CANDIDATES AVAILABLE · NO MATCH · BLOCK NO_MATCH",
+                status = "LANE CANDIDATES AVAILABLE · NO MATCH · BLOCK NO_MATCH · FETCH $laneFetchStatus",
                 candidateCount = lanes.size,
             )
             return mergeLaneOverlay(state)
@@ -254,7 +302,8 @@ class DriveTrackingService : Service() {
             else -> "LIKELY LANE · UNCERTAIN"
         }
         val source = String.format(java.util.Locale.US, "%.2f", topLane.sourceConfidence)
-        val status = "$statusCore · SRC $source · ID ${topLane.id} · BLOCK $exactBlocker"
+        val status =
+            "$statusCore · SRC $source · ID ${topLane.id} · BLOCK $exactBlocker · FETCH $laneFetchStatus"
         laneOverlay = LaneOverlay(
             status = status,
             candidateCount = lanes.size,
@@ -415,7 +464,9 @@ class DriveTrackingService : Service() {
         private const val LANE_FETCH_RADIUS_M = 1600
         private const val LANE_CACHE_MIN_AGE_MS = 120_000L
         private const val LANE_RETRY_MIN_AGE_MS = 30_000L
+        private const val LANE_FETCH_ATTEMPT_BACKOFF_MS = 10_000L
         private const val LANE_CACHE_REFRESH_DISTANCE_M = 850.0
+        private const val LANE_CACHE_RETAIN_DISTANCE_M = 4_500.0
         private const val CANDIDATE_MAX_DISTANCE_M = 45.0
         private const val CANDIDATE_MAX_HEADING_ERROR_DEG = 35.0
         private const val CANDIDATE_LIMIT = 20
