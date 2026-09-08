@@ -11,13 +11,38 @@ import kotlin.math.cos
 import kotlin.math.hypot
 
 class DirectOsmLaneClient(
-    private val endpoint: String = DEFAULT_ENDPOINT,
+    private val endpoints: List<String> = DEFAULT_ENDPOINTS,
 ) {
-    data class Corridor(val lanes: List<Lane>)
+    data class Corridor(
+        val lanes: List<Lane>,
+        val endpoint: String,
+    )
 
     fun fetchCorridor(lat: Double, lon: Double, radiusMeters: Int = 1200): Corridor {
         val radius = radiusMeters.coerceIn(500, 2500)
         val query = buildQuery(lat, lon, radius)
+        val failures = mutableListOf<String>()
+
+        for (endpoint in endpoints.distinct()) {
+            try {
+                val payload = fetchPayload(endpoint, query)
+                return Corridor(
+                    lanes = parse(payload),
+                    endpoint = endpoint,
+                )
+            } catch (exc: Exception) {
+                val detail = exc.message?.replace('\n', ' ')?.take(80) ?: exc.javaClass.simpleName
+                failures += "${endpointHost(endpoint)}: $detail"
+            }
+        }
+
+        error(
+            if (failures.isEmpty()) "No OSM endpoint configured"
+            else "All OSM endpoints failed · ${failures.joinToString(" | ").take(220)}"
+        )
+    }
+
+    private fun fetchPayload(endpoint: String, query: String): String {
         val connection = URL(endpoint).openConnection() as HttpURLConnection
         return try {
             connection.requestMethod = "POST"
@@ -26,30 +51,32 @@ class DirectOsmLaneClient(
             connection.doOutput = true
             connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
             connection.setRequestProperty("Accept", "application/json")
-            connection.setRequestProperty("User-Agent", "LaneGPS-Android-MVP/0.3 (+https://github.com/xz64uj777/gps)")
+            connection.setRequestProperty("User-Agent", "LaneGPS-Android-MVP/0.4 (+https://github.com/xz64uj777/gps)")
             val body = "data=" + URLEncoder.encode(query, Charsets.UTF_8.name())
             connection.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(body) }
 
             val code = connection.responseCode
-            if (code == 429 || code == 504) error("OSM service busy · HTTP $code")
+            if (code == 429 || code in 500..599) error("OSM service busy · HTTP $code")
             if (code !in 200..299) error("OSM HTTP $code")
-            val payload = connection.inputStream.bufferedReader().use { it.readText() }
-            parse(payload)
+            connection.inputStream.bufferedReader().use { it.readText() }
         } finally {
             connection.disconnect()
         }
     }
 
+    private fun endpointHost(endpoint: String): String =
+        runCatching { URL(endpoint).host }.getOrDefault(endpoint)
+
     private fun buildQuery(lat: Double, lon: Double, radius: Int): String = """
         [out:json][timeout:18];
         way(around:$radius,${"%.7f".format(java.util.Locale.US, lat)},${"%.7f".format(java.util.Locale.US, lon)})
-          ["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link|living_street|service)$"];
+          ["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|road|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link|living_street|service)$"];
         out tags geom;
     """.trimIndent()
 
-    private fun parse(body: String): Corridor {
+    private fun parse(body: String): List<Lane> {
         val root = JSONObject(body)
-        val elements = root.optJSONArray("elements") ?: return Corridor(emptyList())
+        val elements = root.optJSONArray("elements") ?: return emptyList()
         val lanes = mutableListOf<Lane>()
 
         for (i in 0 until elements.length()) {
@@ -78,14 +105,23 @@ class DirectOsmLaneClient(
             if (base.size < 2) continue
 
             val wayId = element.optLong("id")
+            val highway = tags["highway"]?.lowercase()?.trim().orEmpty()
             val oneway = tags["oneway"]?.lowercase()?.trim().orEmpty()
-            when (oneway) {
-                "yes", "1", "true" -> addOneWay(lanes, wayId, 1, base, tags, Direction.FORWARD)
-                "-1" -> addOneWay(lanes, wayId, -1, base.asReversed(), tags, Direction.BACKWARD)
+            val implicitMotorwayOneWay =
+                highway in setOf("motorway", "motorway_link") &&
+                    oneway !in setOf("no", "0", "false")
+
+            when {
+                oneway in setOf("yes", "1", "true") ->
+                    addOneWay(lanes, wayId, 1, base, tags, Direction.FORWARD)
+                oneway == "-1" ->
+                    addOneWay(lanes, wayId, -1, base.asReversed(), tags, Direction.BACKWARD)
+                implicitMotorwayOneWay ->
+                    addOneWay(lanes, wayId, 1, base, tags, Direction.FORWARD)
                 else -> addTwoWay(lanes, wayId, base, tags)
             }
         }
-        return Corridor(lanes)
+        return lanes
     }
 
     private fun addOneWay(
@@ -285,7 +321,11 @@ class DirectOsmLaneClient(
     )
 
     private companion object {
-        const val DEFAULT_ENDPOINT = "https://overpass-api.de/api/interpreter"
+        val DEFAULT_ENDPOINTS = listOf(
+            "https://overpass-api.de/api/interpreter",
+            "https://overpass.private.coffee/api/interpreter",
+            "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+        )
         const val DEFAULT_LANE_WIDTH_M = 3.6
     }
 }
