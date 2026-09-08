@@ -22,10 +22,15 @@ class DirectOsmLaneClient(
         val radius = radiusMeters.coerceIn(500, 2500)
         val query = buildQuery(lat, lon, radius)
         val failures = mutableListOf<String>()
+        val orderedEndpoints = buildList {
+            preferredEndpoint?.let(::add)
+            addAll(endpoints)
+        }.distinct()
 
-        for (endpoint in endpoints.distinct()) {
+        for (endpoint in orderedEndpoints) {
             try {
                 val payload = fetchPayload(endpoint, query)
+                preferredEndpoint = endpoint
                 return Corridor(
                     lanes = parse(payload),
                     endpoint = endpoint,
@@ -46,12 +51,12 @@ class DirectOsmLaneClient(
         val connection = URL(endpoint).openConnection() as HttpURLConnection
         return try {
             connection.requestMethod = "POST"
-            connection.connectTimeout = 7000
-            connection.readTimeout = 20_000
+            connection.connectTimeout = 5000
+            connection.readTimeout = 12_000
             connection.doOutput = true
             connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
             connection.setRequestProperty("Accept", "application/json")
-            connection.setRequestProperty("User-Agent", "LaneGPS-Android-MVP/0.4 (+https://github.com/xz64uj777/gps)")
+            connection.setRequestProperty("User-Agent", "LaneGPS-Android-MVP/0.5 (+https://github.com/xz64uj777/gps)")
             val body = "data=" + URLEncoder.encode(query, Charsets.UTF_8.name())
             connection.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(body) }
 
@@ -68,7 +73,7 @@ class DirectOsmLaneClient(
         runCatching { URL(endpoint).host }.getOrDefault(endpoint)
 
     private fun buildQuery(lat: Double, lon: Double, radius: Int): String = """
-        [out:json][timeout:18];
+        [out:json][timeout:12];
         way(around:$radius,${"%.7f".format(java.util.Locale.US, lat)},${"%.7f".format(java.util.Locale.US, lon)})
           ["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|road|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link|living_street|service)$"];
         out tags geom;
@@ -321,6 +326,9 @@ class DirectOsmLaneClient(
     )
 
     private companion object {
+        @Volatile
+        var preferredEndpoint: String? = null
+
         val DEFAULT_ENDPOINTS = listOf(
             "https://overpass-api.de/api/interpreter",
             "https://overpass.private.coffee/api/interpreter",
