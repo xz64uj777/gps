@@ -207,7 +207,7 @@ class DriveTrackingService : Service() {
 
         if (nearby.isEmpty()) {
             laneOverlay = LaneOverlay(
-                status = "OSM LOADED · NO PLAUSIBLE LANE HERE",
+                status = "OSM LOADED · NO PLAUSIBLE LANE HERE · BLOCK NO_CANDIDATE",
                 candidateCount = 0,
             )
             return mergeLaneOverlay(state)
@@ -232,7 +232,7 @@ class DriveTrackingService : Service() {
         val topLane = lanes.firstOrNull { it.id == estimate.mostLikelyLaneId }
         if (topLane == null) {
             laneOverlay = LaneOverlay(
-                status = "LANE CANDIDATES AVAILABLE · NO MATCH",
+                status = "LANE CANDIDATES AVAILABLE · NO MATCH · BLOCK NO_MATCH",
                 candidateCount = lanes.size,
             )
             return mergeLaneOverlay(state)
@@ -240,11 +240,21 @@ class DriveTrackingService : Service() {
 
         val sameSegment = allLanes.filter { it.segmentId == topLane.segmentId }
         val exact = estimate.claimExactLane && state.sensorLaneReady && accuracy <= 5f
-        val status = when {
+        val exactBlocker = when {
+            exact -> "READY"
+            accuracy > 5f -> "GNSS_ACCURACY"
+            !state.sensorLaneReady -> "SENSOR_GATE"
+            topLane.sourceConfidence < EXACT_SOURCE_CONFIDENCE_MIN -> "MAP_SOURCE"
+            estimate.confidence < EXACT_MATCH_CONFIDENCE_MIN -> "MATCH_CONFIDENCE"
+            else -> "STABILITY_OR_TRANSITION"
+        }
+        val statusCore = when {
             accuracy > 5f -> "UNCERTAIN · GNSS ${"%.1f".format(accuracy)} m"
             exact -> "EXACT-LANE CLAIM READY"
             else -> "LIKELY LANE · UNCERTAIN"
         }
+        val source = String.format(java.util.Locale.US, "%.2f", topLane.sourceConfidence)
+        val status = "$statusCore · SRC $source · ID ${topLane.id} · BLOCK $exactBlocker"
         laneOverlay = LaneOverlay(
             status = status,
             candidateCount = lanes.size,
@@ -409,6 +419,8 @@ class DriveTrackingService : Service() {
         private const val CANDIDATE_MAX_DISTANCE_M = 45.0
         private const val CANDIDATE_MAX_HEADING_ERROR_DEG = 35.0
         private const val CANDIDATE_LIMIT = 20
+        private const val EXACT_SOURCE_CONFIDENCE_MIN = 0.75
+        private const val EXACT_MATCH_CONFIDENCE_MIN = 0.70
         private const val EARTH_RADIUS_M = 6_371_000.0
     }
 }
