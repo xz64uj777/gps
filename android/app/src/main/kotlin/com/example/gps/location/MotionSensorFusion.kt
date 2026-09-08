@@ -150,9 +150,17 @@ class MotionSensorFusion(
 
     private fun updateDerivedHeading() {
         val deviceHeading = state.sensorHeadingDegrees
-        val fused = when {
-            deviceHeading != null && mountingOffsetDegrees != null ->
+        val correctedSensorHeading =
+            if (deviceHeading != null && mountingOffsetDegrees != null) {
                 normalize360(deviceHeading + mountingOffsetDegrees!!)
+            } else {
+                null
+            }
+        val fused = when {
+            // Once the vehicle is moving fast enough, GNSS course-over-ground is the
+            // trustworthy road heading. Rotation-vector heading can drift badly inside a car.
+            gnssBearingDegrees != null && speedMps >= 5f -> gnssBearingDegrees
+            correctedSensorHeading != null -> correctedSensorHeading
             gnssBearingDegrees != null -> gnssBearingDegrees
             else -> deviceHeading
         }
