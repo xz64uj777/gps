@@ -43,6 +43,26 @@ class LaneEngineTest {
     }
 
     @Test
+    fun inferredLowConfidenceLaneNeverClaimsExact() {
+        val lane = Lane(
+            "L1",
+            "S",
+            0,
+            listOf(GeoPoint(40.0, -74.0), GeoPoint(40.001, -74.0)),
+            sourceConfidence = 0.30,
+        )
+        val matcher = LaneMatcher()
+        repeat(6) { index ->
+            val estimate = matcher.update(
+                Observation(index.toLong() + 1, GeoPoint(40.0005, -74.0), 2.0, 20.0, 0.0),
+                listOf(lane),
+            )
+            assertEquals("L1", estimate.mostLikelyLaneId)
+            assertFalse(estimate.claimExactLane)
+        }
+    }
+
+    @Test
     fun exactLaneRequiresSeveralDistinctGoodFixes() {
         val lane = Lane(
             "L1",
