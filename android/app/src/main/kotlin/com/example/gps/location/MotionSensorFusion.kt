@@ -50,6 +50,7 @@ class MotionSensorFusion(
     private var started = false
     private var hasRotation = false
     private var gnssBearingDegrees: Float? = null
+    private var lastGnssBearingElapsed = 0L
     private var speedMps: Float = 0f
     private var mountingOffsetDegrees: Float? = null
     private var lastPublishElapsed = 0L
@@ -87,8 +88,14 @@ class MotionSensorFusion(
     }
 
     fun updateGnss(bearingDegrees: Float?, speedMps: Float?) {
-        this.gnssBearingDegrees = bearingDegrees
+        val now = SystemClock.elapsedRealtime()
         this.speedMps = speedMps ?: 0f
+        if (bearingDegrees != null) {
+            gnssBearingDegrees = bearingDegrees
+            lastGnssBearingElapsed = now
+        } else if (this.speedMps < 3f || now - lastGnssBearingElapsed > GNSS_BEARING_HOLD_MS) {
+            gnssBearingDegrees = null
+        }
         calibrateMountingOffsetIfPossible()
         updateDerivedHeading()
         updateMotionState()
@@ -157,8 +164,6 @@ class MotionSensorFusion(
                 null
             }
         val fused = when {
-            // Once the vehicle is moving fast enough, GNSS course-over-ground is the
-            // trustworthy road heading. Rotation-vector heading can drift badly inside a car.
             gnssBearingDegrees != null && speedMps >= 5f -> gnssBearingDegrees
             correctedSensorHeading != null -> correctedSensorHeading
             gnssBearingDegrees != null -> gnssBearingDegrees
@@ -375,5 +380,9 @@ class MotionSensorFusion(
         if (normalized > 180f) normalized -= 360f
         if (normalized < -180f) normalized += 360f
         return normalized
+    }
+
+    private companion object {
+        const val GNSS_BEARING_HOLD_MS = 8_000L
     }
 }
