@@ -406,16 +406,34 @@ class DriveTrackingService : Service() {
 
     private fun buildNotification(): Notification {
         val openIntent = Intent(this, MainActivity::class.java)
-        val pendingIntent = PendingIntent.getActivity(
-            this, 0, openIntent,
+        val openPendingIntent = PendingIntent.getActivity(
+            this,
+            0,
+            openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val stopIntent = Intent(this, DriveTrackingService::class.java)
+            .setAction(ACTION_STOP)
+        val stopPendingIntent = PendingIntent.getService(
+            this,
+            1,
+            stopIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
-            .setContentTitle("Lane GPS drive test recording")
-            .setContentText("GNSS + motion + direct OSM lane matching. Screen can be off.")
-            .setContentIntent(pendingIntent)
+            .setContentTitle("LaneGPS recording")
+            .setContentText("GNSS + motion + lane matching active. Tap STOP & SAVE when parked.")
+            .setContentIntent(openPendingIntent)
+            .addAction(
+                Notification.Action.Builder(
+                    android.R.drawable.ic_media_pause,
+                    "STOP & SAVE",
+                    stopPendingIntent,
+                ).build()
+            )
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .setCategory(Notification.CATEGORY_SERVICE)
             .build()
     }
