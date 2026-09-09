@@ -36,28 +36,103 @@ class DriveTelemetryRecorder(context: Context) {
         val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
         val displayName = "LaneGPS-drive-$timestamp.csv"
         val resolver = appContext.contentResolver
-        val relativeFolder = Environment.DIRECTORY_DOWNLOADS + "/LaneGPS/"
+        val relativeFolder = "${Environment.DIRECTORY_DOWNLOADS}/LaneGPS"
+        val exportFile = buildTrimmedExportFile()
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
             put(MediaStore.MediaColumns.MIME_TYPE, "text/csv")
             put(MediaStore.MediaColumns.RELATIVE_PATH, relativeFolder)
             put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
-        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return null
+        val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        val uri = resolver.insert(collection, values) ?: run {
+            exportFile.delete()
+            return null
+        }
 
         return try {
             resolver.openOutputStream(uri, "w")?.use { output ->
-                logFile.inputStream().use { input -> input.copyTo(output) }
+                exportFile.inputStream().use { input -> input.copyTo(output) }
             } ?: error("Unable to open Downloads output")
 
             values.clear()
+            values.put(MediaStore.MediaColumns.RELATIVE_PATH, relativeFolder)
             values.put(MediaStore.MediaColumns.IS_PENDING, 0)
             resolver.update(uri, values, null, null)
             "LaneGPS/$displayName"
         } catch (_: Exception) {
             resolver.delete(uri, null, null)
             null
+        } finally {
+            exportFile.delete()
         }
+    }
+
+    private fun buildTrimmedExportFile(): File {
+        val output = File(appContext.cacheDir, "lane-gps-export.csv")
+        val lines = logFile.readLines()
+        if (lines.size <= 2) {
+            logFile.copyTo(output, overwrite = true)
+            return output
+        }
+
+        var lastUsefulRecordedAt: Long? = null
+        for (line in lines.drop(1)) {
+            val fields = parseCsvLine(line)
+            if (fields.size <= FIX_STALE_INDEX) continue
+            val recordedAt = fields.getOrNull(RECORDED_AT_INDEX)?.toLongOrNull() ?: continue
+            val fixAge = fields.getOrNull(FIX_AGE_INDEX)?.toLongOrNull() ?: Long.MAX_VALUE
+            val accuracy = fields.getOrNull(ACCURACY_INDEX)?.toDoubleOrNull() ?: Double.POSITIVE_INFINITY
+            val speed = fields.getOrNull(SPEED_INDEX)?.toDoubleOrNull() ?: 0.0
+            val stale = fields.getOrNull(FIX_STALE_INDEX)?.toBooleanStrictOrNull() ?: true
+
+            if (!stale && fixAge <= STALE_FIX_MS && accuracy <= USEFUL_ACCURACY_M && speed >= MOVING_SPEED_MPS) {
+                lastUsefulRecordedAt = recordedAt
+            }
+        }
+
+        val lastUseful = lastUsefulRecordedAt
+        if (lastUseful == null) {
+            logFile.copyTo(output, overwrite = true)
+            return output
+        }
+
+        val cutoff = lastUseful + EXPORT_TAIL_GRACE_MS
+        output.bufferedWriter().use { writer ->
+            writer.appendLine(lines.first())
+            for (line in lines.drop(1)) {
+                val fields = parseCsvLine(line)
+                val recordedAt = fields.getOrNull(RECORDED_AT_INDEX)?.toLongOrNull()
+                if (recordedAt != null && recordedAt > cutoff) break
+                writer.appendLine(line)
+            }
+        }
+        return output
+    }
+
+    private fun parseCsvLine(line: String): List<String> {
+        val values = mutableListOf<String>()
+        val current = StringBuilder()
+        var inQuotes = false
+        var i = 0
+        while (i < line.length) {
+            val c = line[i]
+            when {
+                c == '"' && inQuotes && i + 1 < line.length && line[i + 1] == '"' -> {
+                    current.append('"')
+                    i++
+                }
+                c == '"' -> inQuotes = !inQuotes
+                c == ',' && !inQuotes -> {
+                    values += current.toString()
+                    current.clear()
+                }
+                else -> current.append(c)
+            }
+            i++
+        }
+        values += current.toString()
+        return values
     }
 
     private fun buildRow(state: GnssUiState): String {
@@ -108,6 +183,16 @@ class DriveTelemetryRecorder(context: Context) {
 
     companion object {
         private const val STALE_FIX_MS = 3000L
+        private const val USEFUL_ACCURACY_M = 50.0
+        private const val MOVING_SPEED_MPS = 1.0
+        private const val EXPORT_TAIL_GRACE_MS = 90_000L
+
+        private const val ACCURACY_INDEX = 3
+        private const val SPEED_INDEX = 9
+        private const val RECORDED_AT_INDEX = 24
+        private const val FIX_AGE_INDEX = 26
+        private const val FIX_STALE_INDEX = 27
+
         private const val HEADER =
             "timestamp_ms,lat,lon,accuracy_m,quality_score,quality_label,sat_used,sat_visible,avg_cn0_dbhz," +
                 "speed_mps,gnss_bearing_deg,sensor_heading_deg,fused_heading_deg,lateral_mps2,yaw_deg_s," +
