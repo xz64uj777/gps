@@ -28,9 +28,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.gps.location.DriveReplayCsv
 import com.example.gps.location.DriveReplaySample
+import com.example.gps.replay.ReplayLaneAnalysis
+import com.example.gps.replay.ReplayLaneAnalyzer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.roundToInt
 
 class ReplayActivity : ComponentActivity() {
@@ -39,7 +43,13 @@ class ReplayActivity : ComponentActivity() {
     private var playing by mutableStateOf(false)
     private var fileName by mutableStateOf<String?>(null)
     private var loadError by mutableStateOf<String?>(null)
+    private var currentAnalysis by mutableStateOf<ReplayLaneAnalysis?>(null)
+    private var analysisBusy by mutableStateOf(false)
+
     private val handler = Handler(Looper.getMainLooper())
+    private val analyzer = ReplayLaneAnalyzer()
+    private val analysisExecutor = Executors.newSingleThreadExecutor()
+    private val analysisGeneration = AtomicInteger(0)
 
     private val picker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) loadReplay(uri)
@@ -55,6 +65,7 @@ class ReplayActivity : ComponentActivity() {
             val current = samples[sampleIndex]
             val next = samples[sampleIndex + 1]
             sampleIndex++
+            scheduleLaneAnalysis()
             val sourceDelay = (next.recordedAtMillis - current.recordedAtMillis).coerceAtLeast(1L)
             val replayDelay = (sourceDelay / REPLAY_SPEED).coerceIn(MIN_TICK_MS, MAX_TICK_MS)
             handler.postDelayed(this, replayDelay)
@@ -71,6 +82,8 @@ class ReplayActivity : ComponentActivity() {
                     playing = playing,
                     fileName = fileName,
                     error = loadError,
+                    analysis = currentAnalysis,
+                    analysisBusy = analysisBusy,
                     onLoad = { picker.launch(arrayOf("text/csv", "text/comma-separated-values", "text/plain")) },
                     onPrevious = { step(-1) },
                     onNext = { step(1) },
@@ -95,10 +108,18 @@ class ReplayActivity : ComponentActivity() {
         super.onStop()
     }
 
+    override fun onDestroy() {
+        analysisGeneration.incrementAndGet()
+        analysisExecutor.shutdownNow()
+        super.onDestroy()
+    }
+
     private fun loadReplay(uri: Uri) {
         playing = false
         handler.removeCallbacks(replayTick)
         loadError = null
+        currentAnalysis = null
+        analysisBusy = false
         try {
             val text = contentResolver.openInputStream(uri)
                 ?.bufferedReader()
@@ -109,6 +130,8 @@ class ReplayActivity : ComponentActivity() {
             samples = parsed
             sampleIndex = 0
             fileName = queryDisplayName(uri) ?: uri.lastPathSegment ?: "Drive replay"
+            analyzer.reset(clearMapCache = true)
+            scheduleLaneAnalysis()
         } catch (exc: Exception) {
             samples = emptyList()
             sampleIndex = 0
@@ -127,7 +150,11 @@ class ReplayActivity : ComponentActivity() {
 
     private fun togglePlayback() {
         if (samples.isEmpty()) return
-        if (sampleIndex >= samples.lastIndex) sampleIndex = 0
+        if (sampleIndex >= samples.lastIndex) {
+            sampleIndex = 0
+            analyzer.reset(clearMapCache = false)
+            scheduleLaneAnalysis()
+        }
         playing = !playing
         handler.removeCallbacks(replayTick)
         if (playing) handler.post(replayTick)
@@ -137,13 +164,45 @@ class ReplayActivity : ComponentActivity() {
         playing = false
         handler.removeCallbacks(replayTick)
         if (samples.isEmpty()) return
-        sampleIndex = (sampleIndex + delta).coerceIn(0, samples.lastIndex)
+        val next = (sampleIndex + delta).coerceIn(0, samples.lastIndex)
+        if (next < sampleIndex) analyzer.reset(clearMapCache = false)
+        sampleIndex = next
+        scheduleLaneAnalysis()
     }
 
     private fun restartReplay() {
         playing = false
         handler.removeCallbacks(replayTick)
         sampleIndex = 0
+        analyzer.reset(clearMapCache = false)
+        scheduleLaneAnalysis()
+    }
+
+    private fun scheduleLaneAnalysis() {
+        val sample = samples.getOrNull(sampleIndex) ?: run {
+            currentAnalysis = null
+            analysisBusy = false
+            return
+        }
+        val generation = analysisGeneration.incrementAndGet()
+        analysisBusy = true
+        analysisExecutor.execute {
+            if (generation != analysisGeneration.get()) return@execute
+            val result = try {
+                analyzer.analyze(sample)
+            } catch (exc: Exception) {
+                ReplayLaneAnalysis(
+                    status = "CURRENT ENGINE ERROR · ${exc.message ?: exc.javaClass.simpleName}",
+                )
+            }
+            if (generation != analysisGeneration.get()) return@execute
+            runOnUiThread {
+                if (generation == analysisGeneration.get()) {
+                    currentAnalysis = result
+                    analysisBusy = false
+                }
+            }
+        }
     }
 
     private companion object {
@@ -160,6 +219,8 @@ private fun ReplayScreen(
     playing: Boolean,
     fileName: String?,
     error: String?,
+    analysis: ReplayLaneAnalysis?,
+    analysisBusy: Boolean,
     onLoad: () -> Unit,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
@@ -175,9 +236,9 @@ private fun ReplayScreen(
             .verticalScroll(rememberScrollState())
             .padding(16.dp)
     ) {
-        Text("Lane GPS · Trip Replay", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 25.sp)
+        Text("Lane GPS · Trip Lab", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 25.sp)
         Text(
-            "Replay saved drives at 4× speed without getting back in the car.",
+            "Recorded drive vs current lane engine · 4× replay",
             color = Color(0xFF9DA7B3),
             fontSize = 13.sp,
         )
@@ -192,7 +253,7 @@ private fun ReplayScreen(
         if (sample == null || state == null) {
             Spacer(Modifier.height(18.dp))
             Text(
-                "Choose any LaneGPS-drive CSV. Older logs are supported; their logger timeline is reconstructed when GNSS timestamps repeat.",
+                "Choose any LaneGPS-drive CSV. The Trip Lab replays the recorded telemetry and also asks the current LaneMatcher + current OpenStreetMap data what lane it would choose now.",
                 color = Color(0xFFB8C1CC),
             )
             return@Column
@@ -236,42 +297,79 @@ private fun ReplayScreen(
         ReplayRow("Quality", "${state.qualityScore}/100 · ${state.qualityLabel}")
         ReplayRow("Satellites", "${state.satellitesUsedInFix}/${state.satellitesVisible}")
         ReplayRow("Speed", state.speedMps?.let { "%.1f mph".format(it * 2.236936f) } ?: "—")
-        ReplayRow("Bearing", state.bearingDegrees?.let { "%.0f°".format(it) } ?: "—")
+        ReplayRow("GNSS bearing", state.bearingDegrees?.let { "%.0f°".format(it) } ?: "—")
 
         Spacer(Modifier.height(16.dp))
-        ReplaySectionTitle("Motion + lane decision")
+        ReplaySectionTitle("Motion")
         ReplayRow("Sensor heading", state.sensorHeadingDegrees?.let { "%.0f°".format(it) } ?: "—")
         ReplayRow("Fused heading", state.fusedHeadingDegrees?.let { "%.0f°".format(it) } ?: "—")
         ReplayRow("Lateral", state.lateralAccelerationMps2?.let { "%+.2f m/s²".format(it) } ?: "—")
         ReplayRow("Yaw", state.yawRateDegS?.let { "%+.1f°/s".format(it) } ?: "—")
         ReplayRow("Motion", state.motionHint)
-        ReplayRow("Candidates", state.laneCandidateCount.toString())
-        ReplayRow(
-            "Likely lane",
-            if (state.likelyLaneNumberFromLeft != null && state.likelyLaneCount != null)
-                "${state.likelyLaneNumberFromLeft} of ${state.likelyLaneCount}"
-            else "—",
-        )
-        ReplayRow("Confidence", "${(state.laneConfidence * 100f).roundToInt()}%")
-        Text(
-            if (state.laneExactClaim) "EXACT-LANE CLAIM WAS ACTIVE" else "UNCERTAIN / EXACT CLAIM BLOCKED",
-            color = if (state.laneExactClaim) Color(0xFF7EE787) else Color(0xFFFFCC80),
-            fontWeight = FontWeight.Bold,
-            fontSize = 13.sp,
-        )
-        Text(state.laneDataStatus, color = Color(0xFF9DA7B3), fontSize = 12.sp)
 
         Spacer(Modifier.height(18.dp))
-        val laneCount = state.likelyLaneCount?.coerceIn(1, 8) ?: 5
+        ReplaySectionTitle("Lane decision · recorded vs current")
+        val recordedLane = laneText(state.likelyLaneNumberFromLeft, state.likelyLaneCount)
+        ReplayRow("Recorded lane", recordedLane)
+        ReplayRow("Recorded conf.", "${(state.laneConfidence * 100f).roundToInt()}%")
+        ReplayRow("Recorded exact", if (state.laneExactClaim) "YES" else "NO")
+
+        if (analysisBusy) {
+            Spacer(Modifier.height(8.dp))
+            Text("CURRENT ENGINE · ANALYZING…", color = Color(0xFF8ED7FF), fontWeight = FontWeight.Bold)
+        }
+        if (analysis != null) {
+            val currentLane = laneText(analysis.laneNumberFromLeft, analysis.laneCount)
+            ReplayRow("Current lane", currentLane)
+            ReplayRow("Current conf.", "${(analysis.confidence * 100f).roundToInt()}%")
+            ReplayRow("Current exact", if (analysis.exactClaim) "YES" else "NO")
+            ReplayRow(
+                "Heading used",
+                analysis.headingDegrees?.let { "${"%.0f".format(it)}° · ${analysis.headingSource}" } ?: analysis.headingSource,
+            )
+            ReplayRow(
+                "Phone/GPS Δ",
+                analysis.headingDisagreementDegrees?.let { "%.0f°".format(it) } ?: "—",
+            )
+            ReplayRow("Map source", if (analysis.sourceConfidence > 0f) "${(analysis.sourceConfidence * 100f).roundToInt()}%" else "—")
+
+            val comparison = when {
+                analysis.laneNumberFromLeft == null -> "CURRENT ENGINE HAS NO LANE CLAIM"
+                state.likelyLaneNumberFromLeft == null -> "CURRENT ENGINE FOUND A LANE"
+                analysis.laneNumberFromLeft == state.likelyLaneNumberFromLeft -> "CURRENT ENGINE AGREES WITH RECORDED LANE"
+                else -> "LANE DECISION CHANGED · REVIEW THIS POINT"
+            }
+            val comparisonColor = when {
+                analysis.laneNumberFromLeft == state.likelyLaneNumberFromLeft && analysis.laneNumberFromLeft != null -> Color(0xFF7EE787)
+                analysis.laneNumberFromLeft == null -> Color(0xFFFFCC80)
+                else -> Color(0xFF8ED7FF)
+            }
+            Spacer(Modifier.height(7.dp))
+            Text(comparison, color = comparisonColor, fontWeight = FontWeight.ExtraBold, fontSize = 14.sp)
+            Text(analysis.status, color = Color(0xFFB8C1CC), fontSize = 12.sp)
+            Text(analysis.fetchStatus, color = Color(0xFF7D8895), fontSize = 11.sp)
+        }
+
+        Spacer(Modifier.height(18.dp))
+        val displayLaneCount = (analysis?.laneCount ?: state.likelyLaneCount)?.coerceIn(1, 8) ?: 5
+        val displayLikely = analysis?.laneNumberFromLeft ?: state.likelyLaneNumberFromLeft
+        val displayExact = if (analysis != null) {
+            if (analysis.exactClaim) analysis.laneNumberFromLeft else null
+        } else {
+            if (state.laneExactClaim) state.likelyLaneNumberFromLeft else null
+        }
         Box(Modifier.fillMaxWidth().height(330.dp)) {
             ReplayLaneView(
-                laneCount = laneCount,
-                exactLaneNumberFromLeft = if (state.laneExactClaim) state.likelyLaneNumberFromLeft else null,
-                likelyLaneNumberFromLeft = state.likelyLaneNumberFromLeft,
+                laneCount = displayLaneCount,
+                exactLaneNumberFromLeft = displayExact,
+                likelyLaneNumberFromLeft = displayLikely,
             )
         }
     }
 }
+
+private fun laneText(lane: Int?, count: Int?): String =
+    if (lane != null && count != null) "$lane of $count" else "—"
 
 @Composable
 private fun ReplaySectionTitle(text: String) {
