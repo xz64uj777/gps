@@ -14,6 +14,18 @@
         android:label="Lane GPS"
         android:theme="@style/Theme.LaneGps"
         android:usesCleartextTraffic="true">
+        <activity
+            android:name=".ReplayActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="text/csv"/>
+                <data android:mimeType="text/comma-separated-values"/>
+                <data android:mimeType="text/plain"/>
+            </intent-filter>
+        </activity>
+
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
