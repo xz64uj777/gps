@@ -1,5 +1,7 @@
 package com.example.gps.route
 
+import com.example.gps.laneengine.GeoPoint
+import com.example.gps.laneengine.RouteProgressTracker
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -27,6 +29,8 @@ import kotlin.math.sqrt
  * needed for an actual reroute.
  */
 class OpenRouteClient {
+    private val progressTracker = RouteProgressTracker()
+
     data class RoutePoint(val lat: Double, val lon: Double)
 
     data class RouteManeuver(
@@ -52,6 +56,7 @@ class OpenRouteClient {
         val maneuvers: List<RouteManeuver> = emptyList(),
         val totalRouteMeters: Double = distanceMeters,
         val totalRouteSeconds: Double = durationSeconds,
+        val progressIndex: Int = 0,
         val offRouteDistanceMeters: Double = 0.0,
         val arrived: Boolean = false,
         val source: String = "OSM · OSRM",
@@ -87,12 +92,11 @@ class OpenRouteClient {
     }
 
     /**
-     * Advances the route locally from a fresh GNSS position.
+     * Advances route progress from a fresh GNSS position.
      *
-     * This is deliberately independent of lane matching. It updates the next
-     * maneuver, remaining route distance, ETA, arrival state and cross-track
-     * distance. The caller can use offRouteDistanceMeters to decide when a
-     * network reroute is justified.
+     * Progress is monotonic within one active route. Matching is restricted to a
+     * local forward corridor around the last accepted point so loops, parallel
+     * streets and noisy fixes cannot jump navigation back to an earlier section.
      */
     fun updateProgress(
         route: RouteSummary,
@@ -102,19 +106,33 @@ class OpenRouteClient {
         if (route.geometry.isEmpty()) return route
 
         val current = RoutePoint(currentLat, currentLon)
-        val nearestIndex = nearestRouteIndex(current, route.geometry)
-        val offRoute = pointToPolylineMeters(current, route.geometry)
+        val geometryPoints = route.geometry.map { GeoPoint(it.lat, it.lon) }
+        val progress = progressTracker.match(
+            position = GeoPoint(currentLat, currentLon),
+            geometry = geometryPoints,
+            previousIndex = route.progressIndex,
+        )
+        val nearestIndex = progress.routeIndex
+        val offRoute = progress.crossTrackMeters
         val destinationDistance = distanceMeters(
             current,
             RoutePoint(route.destinationLat, route.destinationLon),
         )
         val arrived = destinationDistance <= ARRIVAL_RADIUS_M
 
-        val remaining = if (arrived) {
+        val calculatedRemaining = if (arrived) {
             0.0
         } else {
             distanceMeters(current, route.geometry[nearestIndex]) +
                 routeDistance(route.geometry, nearestIndex, route.geometry.lastIndex)
+        }
+        // Small GPS wobble can make straight-line distance to the accepted route
+        // point grow slightly. Do not let that create large backwards-looking ETA
+        // jumps on the same route.
+        val remaining = if (route.progressIndex > 0 && !arrived) {
+            minOf(calculatedRemaining, route.distanceMeters + REMAINING_JITTER_ALLOWANCE_M)
+        } else {
+            calculatedRemaining
         }
         val remainingSeconds = if (route.totalRouteMeters > 1.0) {
             route.totalRouteSeconds * (remaining / route.totalRouteMeters).coerceIn(0.0, 1.25)
@@ -159,6 +177,7 @@ class OpenRouteClient {
             },
             nextRoad = next?.road.orEmpty(),
             nextManeuverDistanceMeters = maneuverDistance,
+            progressIndex = nearestIndex,
             offRouteDistanceMeters = offRoute,
             arrived = arrived,
         )
@@ -261,6 +280,7 @@ class OpenRouteClient {
             maneuvers = orderedManeuvers,
             totalRouteMeters = totalDistance,
             totalRouteSeconds = totalDuration,
+            progressIndex = 0,
         )
         return updateProgress(initial, originLat, originLon)
     }
@@ -276,7 +296,7 @@ class OpenRouteClient {
         NavigationTelemetryRuntime.publish(
             route = route,
             event = event,
-            routePointIndex = null,
+            routePointIndex = route.progressIndex,
             maneuverIndex = firstManeuverIndex,
             incrementReroute = incrementReroute,
         )
@@ -320,34 +340,6 @@ class OpenRouteClient {
             total += distanceMeters(geometry[index], geometry[index + 1])
         }
         return total
-    }
-
-    private fun pointToPolylineMeters(point: RoutePoint, line: List<RoutePoint>): Double {
-        if (line.isEmpty()) return Double.POSITIVE_INFINITY
-        if (line.size == 1) return distanceMeters(point, line.first())
-
-        val lat0 = point.lat * PI / 180.0
-        fun xy(p: RoutePoint): Pair<Double, Double> {
-            val x = (p.lon - point.lon) * PI / 180.0 * EARTH_RADIUS_M * cos(lat0)
-            val y = (p.lat - point.lat) * PI / 180.0 * EARTH_RADIUS_M
-            return x to y
-        }
-
-        var best = Double.POSITIVE_INFINITY
-        for (index in 0 until line.lastIndex) {
-            val (ax, ay) = xy(line[index])
-            val (bx, by) = xy(line[index + 1])
-            val dx = bx - ax
-            val dy = by - ay
-            val denominator = dx * dx + dy * dy
-            val t = if (denominator <= 1e-9) {
-                0.0
-            } else {
-                ((-ax * dx - ay * dy) / denominator).coerceIn(0.0, 1.0)
-            }
-            best = minOf(best, hypot(ax + t * dx, ay + t * dy))
-        }
-        return best
     }
 
     private fun distanceMeters(a: RoutePoint, b: RoutePoint): Double {
@@ -412,5 +404,6 @@ class OpenRouteClient {
         const val EARTH_RADIUS_M = 6_371_000.0
         const val ARRIVAL_RADIUS_M = 25.0
         const val PASSED_MANEUVER_RADIUS_M = 18.0
+        const val REMAINING_JITTER_ALLOWANCE_M = 25.0
     }
 }
