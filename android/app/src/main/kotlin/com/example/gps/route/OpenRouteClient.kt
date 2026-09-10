@@ -63,22 +63,28 @@ class OpenRouteClient {
         originLon: Double,
     ): RouteSummary {
         val place = geocode(query)
-        return route(originLat, originLon, place)
+        val result = route(originLat, originLon, place)
+        publishTelemetry(result, "PLAN")
+        return result
     }
 
     fun reroute(
         previous: RouteSummary,
         originLat: Double,
         originLon: Double,
-    ): RouteSummary = route(
-        originLat = originLat,
-        originLon = originLon,
-        place = Place(
-            name = previous.destinationName,
-            lat = previous.destinationLat,
-            lon = previous.destinationLon,
-        ),
-    )
+    ): RouteSummary {
+        val result = route(
+            originLat = originLat,
+            originLon = originLon,
+            place = Place(
+                name = previous.destinationName,
+                lat = previous.destinationLat,
+                lon = previous.destinationLon,
+            ),
+        )
+        publishTelemetry(result, "REROUTE", incrementReroute = true)
+        return result
+    }
 
     /**
      * Advances the route locally from a fresh GNSS position.
@@ -116,16 +122,21 @@ class OpenRouteClient {
             0.0
         }
 
-        val next = if (arrived) null else route.maneuvers.firstOrNull { maneuver ->
-            when {
-                maneuver.routeIndex > nearestIndex -> true
-                maneuver.routeIndex < nearestIndex -> false
-                else -> distanceMeters(
-                    current,
-                    RoutePoint(maneuver.lat, maneuver.lon),
-                ) > PASSED_MANEUVER_RADIUS_M
+        val nextIndex = if (arrived) {
+            -1
+        } else {
+            route.maneuvers.indexOfFirst { maneuver ->
+                when {
+                    maneuver.routeIndex > nearestIndex -> true
+                    maneuver.routeIndex < nearestIndex -> false
+                    else -> distanceMeters(
+                        current,
+                        RoutePoint(maneuver.lat, maneuver.lon),
+                    ) > PASSED_MANEUVER_RADIUS_M
+                }
             }
         }
+        val next = if (nextIndex >= 0) route.maneuvers[nextIndex] else null
 
         val maneuverDistance = when {
             arrived -> 0.0
@@ -138,7 +149,7 @@ class OpenRouteClient {
                 routeDistance(route.geometry, nearestIndex, next.routeIndex)
         }
 
-        return route.copy(
+        val progressed = route.copy(
             distanceMeters = remaining,
             durationSeconds = remainingSeconds,
             nextManeuver = when {
@@ -151,6 +162,13 @@ class OpenRouteClient {
             offRouteDistanceMeters = offRoute,
             arrived = arrived,
         )
+        NavigationTelemetryRuntime.publish(
+            route = progressed,
+            event = if (arrived) "ARRIVED" else "PROGRESS",
+            routePointIndex = nearestIndex,
+            maneuverIndex = nextIndex.takeIf { it >= 0 },
+        )
+        return progressed
     }
 
     private fun geocode(query: String): Place {
@@ -245,6 +263,23 @@ class OpenRouteClient {
             totalRouteSeconds = totalDuration,
         )
         return updateProgress(initial, originLat, originLon)
+    }
+
+    private fun publishTelemetry(
+        route: RouteSummary,
+        event: String,
+        incrementReroute: Boolean = false,
+    ) {
+        val firstManeuverIndex = route.maneuvers.indexOfFirst {
+            it.label == route.nextManeuver && it.road == route.nextRoad
+        }.takeIf { it >= 0 }
+        NavigationTelemetryRuntime.publish(
+            route = route,
+            event = event,
+            routePointIndex = null,
+            maneuverIndex = firstManeuverIndex,
+            incrementReroute = incrementReroute,
+        )
     }
 
     private fun parseGeometry(geometry: JSONObject?): List<RoutePoint> {
