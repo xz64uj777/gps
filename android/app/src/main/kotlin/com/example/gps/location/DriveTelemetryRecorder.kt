@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.os.Environment
 import android.provider.MediaStore
+import com.example.gps.route.NavigationTelemetryRuntime
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -16,6 +17,7 @@ class DriveTelemetryRecorder(context: Context) {
 
     fun startNew() {
         logDir.mkdirs()
+        NavigationTelemetryRuntime.resetForDrive()
         logFile.writeText(HEADER + "\n")
     }
 
@@ -142,6 +144,7 @@ class DriveTelemetryRecorder(context: Context) {
             (recordedAtMillis - it).coerceAtLeast(0L)
         }
         val fixStale = fixAgeMillis != null && fixAgeMillis > STALE_FIX_MS
+        val nav = NavigationTelemetryRuntime.snapshot()
 
         return listOf(
             (fixTimestampMillis ?: recordedAtMillis).toString(),
@@ -172,6 +175,19 @@ class DriveTelemetryRecorder(context: Context) {
             fixTimestampMillis?.toString() ?: "",
             fixAgeMillis?.toString() ?: "",
             fixStale.toString(),
+            csv(nav.event),
+            csv(nav.destination),
+            csv(nav.nextManeuver),
+            csv(nav.nextRoad),
+            number(nav.nextManeuverDistanceMeters),
+            number(nav.remainingDistanceMeters),
+            number(nav.remainingSeconds),
+            number(nav.offRouteDistanceMeters),
+            nav.routePointIndex?.toString() ?: "",
+            nav.maneuverIndex?.toString() ?: "",
+            nav.arrived.toString(),
+            nav.rerouteCount.toString(),
+            nav.updatedAtMillis.takeIf { it > 0L }?.toString() ?: "",
         ).joinToString(",")
     }
 
@@ -197,6 +213,9 @@ class DriveTelemetryRecorder(context: Context) {
             "timestamp_ms,lat,lon,accuracy_m,quality_score,quality_label,sat_used,sat_visible,avg_cn0_dbhz," +
                 "speed_mps,gnss_bearing_deg,sensor_heading_deg,fused_heading_deg,lateral_mps2,yaw_deg_s," +
                 "motion_hint,calibrated,sensor_lane_ready,lane_status,lane_candidates,lane_from_left," +
-                "lane_count,lane_confidence,exact_lane_claim,recorded_at_ms,fix_timestamp_ms,fix_age_ms,fix_stale"
+                "lane_count,lane_confidence,exact_lane_claim,recorded_at_ms,fix_timestamp_ms,fix_age_ms,fix_stale," +
+                "nav_event,nav_destination,nav_next_maneuver,nav_next_road,nav_maneuver_distance_m," +
+                "nav_remaining_distance_m,nav_remaining_seconds,nav_off_route_m,nav_route_point_index," +
+                "nav_maneuver_index,nav_arrived,nav_reroute_count,nav_updated_at_ms"
     }
 }
