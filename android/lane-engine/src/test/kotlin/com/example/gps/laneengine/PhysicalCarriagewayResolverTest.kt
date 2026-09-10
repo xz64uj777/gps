@@ -13,11 +13,11 @@ class PhysicalCarriagewayResolverTest {
     @Test
     fun combinesTwoPlusThreeParallelSegmentsIntoFivePhysicalLanes() {
         val lanes = listOf(
-            lane("A0", "A", 0, 7.2),
-            lane("A1", "A", 1, 3.6),
+            lane("A0", "A", 0, -7.2),
+            lane("A1", "A", 1, -3.6),
             lane("B0", "B", 0, 0.0),
-            lane("B1", "B", 1, -3.6),
-            lane("B2", "B", 2, -7.2),
+            lane("B1", "B", 1, 3.6),
+            lane("B2", "B", 2, 7.2),
         )
 
         val result = resolver.resolve(
