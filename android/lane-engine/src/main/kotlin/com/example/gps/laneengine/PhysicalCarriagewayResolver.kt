@@ -6,11 +6,15 @@ import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 /**
  * Resolves the physical carriageway visible to a driver when OSM represents one
- * road as several parallel way segments. It deliberately works from geometry,
- * not raw segment IDs, and keeps the result conservative around separated roads.
+ * road as several parallel way segments.
+ *
+ * Geometry can briefly make a junction, collector, frontage road or ramp look
+ * like extra through lanes. Cross-way merges therefore need to persist over real
+ * travel distance before they are allowed to change the displayed lane count.
  */
 class PhysicalCarriagewayResolver {
     data class Result(
@@ -20,12 +24,21 @@ class PhysicalCarriagewayResolver {
         val segmentCount: Int,
     )
 
+    private var pendingSignature: String? = null
+    private var pendingLastPoint: GeoPoint? = null
+    private var pendingDistanceMeters = 0.0
+    private var pendingDistinctPositions = 0
+    private var pendingLastSeenNanos = 0L
+    private var confirmedSignature: String? = null
+
     fun resolve(
         position: GeoPoint,
         travelHeadingDegrees: Double?,
         matchedLane: Lane,
         lanes: List<Lane>,
     ): Result {
+        expireOldEvidenceIfNeeded()
+
         val matchedSegment = lanes.filter { it.segmentId == matchedLane.segmentId }
         val fallback = Result(
             laneNumberFromLeft = matchedLane.index + 1,
@@ -73,8 +86,7 @@ class PhysicalCarriagewayResolver {
         fun center(index: Int): Double = clusters[index].map { it.lateralMeters }.average()
 
         // Only keep the contiguous lane band around the matched lane. This stops a
-        // nearby frontage road or separated collector roadway from being merged just
-        // because it is parallel and happens to be within the search radius.
+        // clearly separated parallel road from being merged just because it is nearby.
         var first = matchedClusterIndex
         while (first > 0) {
             val gap = center(first - 1) - center(first)
@@ -98,12 +110,84 @@ class PhysicalCarriagewayResolver {
             .map { it.lane.segmentId }
             .toSet()
 
-        return Result(
+        val candidate = Result(
             laneNumberFromLeft = physicalIndex + 1,
             laneCount = laneCount,
             mergedSegments = segmentIds.size > 1,
             segmentCount = segmentIds.size.coerceAtLeast(1),
         )
+
+        // A cross-way merge that does not add any lanes has no display benefit and
+        // should not affect confidence/exact-lane behavior.
+        if (!candidate.mergedSegments || candidate.laneCount <= fallback.laneCount) {
+            resetMergeEvidence()
+            return fallback
+        }
+
+        val signature = buildString {
+            append(candidate.laneCount)
+            append('|')
+            segmentIds.sorted().forEach {
+                append(it)
+                append(';')
+            }
+        }
+
+        if (signature != pendingSignature) {
+            pendingSignature = signature
+            pendingLastPoint = position
+            pendingDistanceMeters = 0.0
+            pendingDistinctPositions = 1
+            pendingLastSeenNanos = System.nanoTime()
+            confirmedSignature = null
+            return fallback
+        }
+
+        val previous = pendingLastPoint
+        if (previous != null) {
+            val step = distanceMeters(previous, position)
+            when {
+                step > MAX_EVIDENCE_STEP_M -> {
+                    pendingLastPoint = position
+                    pendingDistanceMeters = 0.0
+                    pendingDistinctPositions = 1
+                    confirmedSignature = null
+                    pendingLastSeenNanos = System.nanoTime()
+                    return fallback
+                }
+                step >= MIN_DISTINCT_FIX_MOVE_M -> {
+                    pendingDistanceMeters += step
+                    pendingDistinctPositions++
+                    pendingLastPoint = position
+                }
+            }
+        }
+        pendingLastSeenNanos = System.nanoTime()
+
+        val confirmed =
+            confirmedSignature == signature ||
+                (pendingDistinctPositions >= MIN_CONFIRM_POSITIONS &&
+                    pendingDistanceMeters >= MIN_CONFIRM_TRAVEL_M)
+        if (!confirmed) return fallback
+
+        confirmedSignature = signature
+        return candidate
+    }
+
+    private fun expireOldEvidenceIfNeeded() {
+        if (pendingLastSeenNanos == 0L) return
+        if (System.nanoTime() - pendingLastSeenNanos > EVIDENCE_TIMEOUT_NANOS) {
+            resetMergeEvidence()
+        }
+    }
+
+    private fun resetMergeEvidence() {
+        pendingSignature = null
+        pendingLastPoint = null
+        pendingDistanceMeters = 0.0
+        pendingDistinctPositions = 0
+        pendingLastSeenNanos = 0L
+        confirmedSignature = null
     }
 
     private fun signedLateralMeters(
@@ -190,6 +274,16 @@ class PhysicalCarriagewayResolver {
         return if (raw > 180.0) 360.0 - raw else raw
     }
 
+    private fun distanceMeters(a: GeoPoint, b: GeoPoint): Double {
+        val p1 = a.lat * PI / 180.0
+        val p2 = b.lat * PI / 180.0
+        val dp = (b.lat - a.lat) * PI / 180.0
+        val dl = (b.lon - a.lon) * PI / 180.0
+        val h = sin(dp / 2) * sin(dp / 2) +
+            cos(p1) * cos(p2) * sin(dl / 2) * sin(dl / 2)
+        return 2.0 * EARTH_RADIUS_M * atan2(sqrt(h), sqrt(1.0 - h))
+    }
+
     private data class Sample(
         val lane: Lane,
         val lateralMeters: Double,
@@ -202,5 +296,14 @@ class PhysicalCarriagewayResolver {
         const val DUPLICATE_LATERAL_TOLERANCE_M = 1.6
         const val MAX_CONTIGUOUS_LANE_GAP_M = 6.4
         const val MAX_LANES = 8
+
+        // Cross-way lane counts must survive actual travel, not just a momentary
+        // junction geometry alignment. The false five-lane merge seen in field
+        // testing lasted under ~20 m, so 30 m deliberately rejects that case.
+        const val MIN_CONFIRM_TRAVEL_M = 30.0
+        const val MIN_CONFIRM_POSITIONS = 3
+        const val MIN_DISTINCT_FIX_MOVE_M = 3.0
+        const val MAX_EVIDENCE_STEP_M = 80.0
+        const val EVIDENCE_TIMEOUT_NANOS = 5_000_000_000L
     }
 }
