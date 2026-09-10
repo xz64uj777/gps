@@ -16,6 +16,7 @@ import com.example.gps.laneengine.GeoPoint
 import com.example.gps.laneengine.Lane
 import com.example.gps.laneengine.LaneMatcher
 import com.example.gps.laneengine.Observation
+import com.example.gps.laneengine.PhysicalCarriagewayResolver
 import java.util.concurrent.Executors
 import kotlin.math.PI
 import kotlin.math.abs
@@ -34,6 +35,7 @@ class DriveTrackingService : Service() {
 
     private val laneExecutor = Executors.newSingleThreadExecutor()
     private val laneLock = Any()
+    private val carriagewayResolver = PhysicalCarriagewayResolver()
     private var laneMatcher = LaneMatcher()
     @Volatile private var cachedLanes: List<Lane> = emptyList()
     @Volatile private var laneFetchInFlight = false
@@ -228,7 +230,12 @@ class DriveTrackingService : Service() {
         }
 
         val position = GeoPoint(lat, lon)
-        val heading = (state.fusedHeadingDegrees ?: state.bearingDegrees)?.toDouble()
+        val movingFastEnoughForHeading = (state.speedMps ?: 0f) >= CANDIDATE_HEADING_MIN_SPEED_MPS
+        val heading = if (movingFastEnoughForHeading) {
+            (state.fusedHeadingDegrees ?: state.bearingDegrees)?.toDouble()
+        } else {
+            null
+        }
         val measured = allLanes.map { lane ->
             val distance = pointToPolylineMeters(position, lane.centerline)
             val laneHeading = laneBearingDegreesNearPoint(lane, position)
@@ -286,14 +293,24 @@ class DriveTrackingService : Service() {
             return mergeLaneOverlay(state)
         }
 
-        val sameSegment = allLanes.filter { it.segmentId == topLane.segmentId }
-        val exact = estimate.claimExactLane && state.sensorLaneReady && accuracy <= 5f
+        val physical = carriagewayResolver.resolve(
+            position = position,
+            travelHeadingDegrees = heading,
+            matchedLane = topLane,
+            lanes = allLanes,
+        )
+        val exact =
+            estimate.claimExactLane &&
+                state.sensorLaneReady &&
+                accuracy <= 5f &&
+                !physical.mergedSegments
         val exactBlocker = when {
             exact -> "READY"
             accuracy > 5f -> "GNSS_ACCURACY"
             !state.sensorLaneReady -> "SENSOR_GATE"
             topLane.sourceConfidence < EXACT_SOURCE_CONFIDENCE_MIN -> "MAP_SOURCE"
             estimate.confidence < EXACT_MATCH_CONFIDENCE_MIN -> "MATCH_CONFIDENCE"
+            physical.mergedSegments -> "CARRIAGEWAY_GROUP"
             else -> "STABILITY_OR_TRANSITION"
         }
         val statusCore = when {
@@ -302,13 +319,18 @@ class DriveTrackingService : Service() {
             else -> "LIKELY LANE · UNCERTAIN"
         }
         val source = String.format(java.util.Locale.US, "%.2f", topLane.sourceConfidence)
+        val carriagewayStatus = if (physical.mergedSegments) {
+            " · ROADGROUP ${physical.laneCount} lanes/${physical.segmentCount} ways"
+        } else {
+            ""
+        }
         val status =
-            "$statusCore · SRC $source · ID ${topLane.id} · BLOCK $exactBlocker · FETCH $laneFetchStatus"
+            "$statusCore · SRC $source · ID ${topLane.id}$carriagewayStatus · BLOCK $exactBlocker · FETCH $laneFetchStatus"
         laneOverlay = LaneOverlay(
             status = status,
             candidateCount = lanes.size,
-            laneNumberFromLeft = topLane.index + 1,
-            laneCount = sameSegment.size.coerceAtLeast(1),
+            laneNumberFromLeft = physical.laneNumberFromLeft,
+            laneCount = physical.laneCount,
             confidence = estimate.confidence.toFloat(),
             exactClaim = exact,
         )
@@ -487,6 +509,7 @@ class DriveTrackingService : Service() {
         private const val LANE_CACHE_RETAIN_DISTANCE_M = 4_500.0
         private const val CANDIDATE_MAX_DISTANCE_M = 45.0
         private const val CANDIDATE_MAX_HEADING_ERROR_DEG = 35.0
+        private const val CANDIDATE_HEADING_MIN_SPEED_MPS = 3.0f
         private const val CANDIDATE_LIMIT = 20
         private const val EXACT_SOURCE_CONFIDENCE_MIN = 0.75
         private const val EXACT_MATCH_CONFIDENCE_MIN = 0.70
