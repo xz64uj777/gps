@@ -7,11 +7,11 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class PhysicalCarriagewayResolverTest {
-    private val resolver = PhysicalCarriagewayResolver()
     private val origin = GeoPoint(41.75, -72.66)
 
     @Test
-    fun combinesTwoPlusThreeParallelSegmentsIntoFivePhysicalLanes() {
+    fun sustainedTwoPlusThreeParallelSegmentsBecomeFivePhysicalLanes() {
+        val resolver = PhysicalCarriagewayResolver()
         val lanes = listOf(
             lane("A0", "A", 0, -7.2),
             lane("A1", "A", 1, -3.6),
@@ -20,21 +20,47 @@ class PhysicalCarriagewayResolverTest {
             lane("B2", "B", 2, 7.2),
         )
 
-        val result = resolver.resolve(
-            position = origin,
+        val first = resolver.resolve(
+            position = positionNorthMeters(0.0),
             travelHeadingDegrees = 0.0,
             matchedLane = lanes[3],
             lanes = lanes,
         )
+        val second = resolver.resolve(positionNorthMeters(12.0), 0.0, lanes[3], lanes)
+        val third = resolver.resolve(positionNorthMeters(24.0), 0.0, lanes[3], lanes)
+        val confirmed = resolver.resolve(positionNorthMeters(36.0), 0.0, lanes[3], lanes)
 
-        assertEquals(5, result.laneCount)
-        assertEquals(4, result.laneNumberFromLeft)
-        assertTrue(result.mergedSegments)
-        assertEquals(2, result.segmentCount)
+        assertEquals(3, first.laneCount)
+        assertFalse(first.mergedSegments)
+        assertEquals(3, second.laneCount)
+        assertEquals(3, third.laneCount)
+        assertEquals(5, confirmed.laneCount)
+        assertEquals(4, confirmed.laneNumberFromLeft)
+        assertTrue(confirmed.mergedSegments)
+        assertEquals(2, confirmed.segmentCount)
+    }
+
+    @Test
+    fun shortJunctionLikeTwoPlusThreeAlignmentNeverBecomesFive() {
+        val resolver = PhysicalCarriagewayResolver()
+        val lanes = listOf(
+            lane("A0", "A", 0, -7.2),
+            lane("A1", "A", 1, -3.6),
+            lane("B0", "B", 0, 0.0),
+            lane("B1", "B", 1, 3.6),
+            lane("B2", "B", 2, 7.2),
+        )
+
+        listOf(0.0, 5.0, 10.0, 15.0, 20.0).forEach { northMeters ->
+            val result = resolver.resolve(positionNorthMeters(northMeters), 0.0, lanes[3], lanes)
+            assertEquals(3, result.laneCount)
+            assertFalse(result.mergedSegments)
+        }
     }
 
     @Test
     fun overlappingSequentialWaysDoNotDoubleLaneCount() {
+        val resolver = PhysicalCarriagewayResolver()
         val lanes = listOf(
             lane("A0", "A", 0, 3.6),
             lane("A1", "A", 1, 0.0),
@@ -48,10 +74,12 @@ class PhysicalCarriagewayResolverTest {
 
         assertEquals(3, result.laneCount)
         assertEquals(2, result.laneNumberFromLeft)
+        assertFalse(result.mergedSegments)
     }
 
     @Test
     fun separatedParallelRoadDoesNotGetMerged() {
+        val resolver = PhysicalCarriagewayResolver()
         val main = listOf(
             lane("M0", "MAIN", 0, 3.6),
             lane("M1", "MAIN", 1, 0.0),
@@ -72,6 +100,7 @@ class PhysicalCarriagewayResolverTest {
 
     @Test
     fun oppositeDirectionParallelRoadDoesNotGetMerged() {
+        val resolver = PhysicalCarriagewayResolver()
         val northbound = listOf(
             lane("N0", "N", 0, 1.8, northbound = true),
             lane("N1", "N", 1, -1.8, northbound = true),
@@ -101,4 +130,7 @@ class PhysicalCarriagewayResolverTest {
         val line = if (northbound) listOf(start, end) else listOf(end, start)
         return Lane(id, segment, index, line)
     }
+
+    private fun positionNorthMeters(northMeters: Double): GeoPoint =
+        GeoPoint(origin.lat + northMeters / 111_320.0, origin.lon)
 }
