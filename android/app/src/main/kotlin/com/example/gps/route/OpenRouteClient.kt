@@ -69,7 +69,16 @@ class OpenRouteClient {
         originLat: Double,
         originLon: Double,
     ): RouteSummary {
-        val place = geocode(query)
+        val exact = DestinationSuggestionRuntime.resolve(query)
+        val place = if (exact != null) {
+            Place(
+                name = exact.label,
+                lat = exact.lat,
+                lon = exact.lon,
+            )
+        } else {
+            geocode(query)
+        }
         val result = route(originLat, originLon, place)
         publishTelemetry(result, "PLAN")
         return result
