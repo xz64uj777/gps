@@ -110,6 +110,15 @@ class PhysicalCarriagewayResolver {
             .map { it.lane.segmentId }
             .toSet()
 
+        // Field logs showed a 3-way geometry bundle being interpreted as seven
+        // physical lanes. That is exactly the junction/collector case this layer
+        // must reject. The supported reconstruction case is two OSM ways that
+        // together represent one visible carriageway (for example 2 + 3 lanes).
+        if (segmentIds.size > MAX_MERGED_SEGMENTS) {
+            resetMergeEvidence()
+            return fallback
+        }
+
         val candidate = Result(
             laneNumberFromLeft = physicalIndex + 1,
             laneCount = laneCount,
@@ -296,6 +305,7 @@ class PhysicalCarriagewayResolver {
         const val DUPLICATE_LATERAL_TOLERANCE_M = 1.6
         const val MAX_CONTIGUOUS_LANE_GAP_M = 6.4
         const val MAX_LANES = 8
+        const val MAX_MERGED_SEGMENTS = 2
 
         // Cross-way lane counts must survive actual travel, not just a momentary
         // junction geometry alignment. The false five-lane merge seen in field
