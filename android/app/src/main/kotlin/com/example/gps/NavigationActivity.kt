@@ -3,9 +3,10 @@ package com.example.gps
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Color as AndroidColor
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -20,7 +21,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -32,6 +35,7 @@ import com.example.gps.location.DriveSessionStore
 import com.example.gps.location.DriveTrackingService
 import com.example.gps.location.GnssUiState
 import com.example.gps.route.DestinationStore
+import com.example.gps.route.NavigationVoiceController
 import com.example.gps.route.OpenRouteClient
 import com.example.gps.route.PhotonSearchClient
 import org.json.JSONArray
@@ -75,11 +79,6 @@ private data class NavigationRouteUi(
     val summary: OpenRouteClient.RouteSummary? = null,
 )
 
-/**
- * Keeps the active route across Fold open/close Activity recreation and ordinary
- * foreground interruptions such as a phone call. Process-death persistence can
- * be added later once the navigation model settles.
- */
 private object NavigationRuntimeCache {
     @Volatile var query: String = ""
     @Volatile var route: OpenRouteClient.RouteSummary? = null
@@ -172,6 +171,11 @@ class NavigationActivity : ComponentActivity() {
                         NavigationRuntimeCache.query = it
                     },
                     onFindRoute = { requestRoutePlan() },
+                    onQuickRoute = { quick ->
+                        routeQuery = quick
+                        NavigationRuntimeCache.query = quick
+                        requestRoutePlan(quick)
+                    },
                     onClearRoute = { clearRoute() },
                     onStartDrive = { startDrive() },
                     onStopDrive = { stopDrive() },
@@ -224,12 +228,13 @@ class NavigationActivity : ComponentActivity() {
         super.onDestroy()
     }
 
-    private fun requestRoutePlan() {
-        val query = routeQuery.trim()
+    private fun requestRoutePlan(queryOverride: String? = null) {
+        val query = (queryOverride ?: routeQuery).trim()
         if (query.isBlank()) {
             routeUi = routeUi.copy(error = "Enter where you're going first.")
             return
         }
+        routeQuery = query
         NavigationRuntimeCache.query = query
 
         if (freshLocation(uiState)) {
@@ -525,6 +530,7 @@ private fun NavigationScreen(
     mapView: MapView,
     onQueryChange: (String) -> Unit,
     onFindRoute: () -> Unit,
+    onQuickRoute: (String) -> Unit,
     onClearRoute: () -> Unit,
     onStartDrive: () -> Unit,
     onStopDrive: () -> Unit,
@@ -555,6 +561,7 @@ private fun NavigationScreen(
         Column(
             Modifier
                 .fillMaxSize()
+                .imePadding()
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = if (wide) 20.dp else 14.dp, vertical = 12.dp)
         ) {
@@ -584,19 +591,19 @@ private fun NavigationScreen(
                     Column(Modifier.weight(0.75f)) {
                         LaneCard(state, laneNumber, laneCount, gpsStale)
                         Spacer(Modifier.height(10.dp))
-                        DestinationCard(query, routeUi, onQueryChange, onFindRoute, onClearRoute)
+                        DestinationCard(query, routeUi, onQueryChange, onFindRoute, onQuickRoute, onClearRoute)
                         Spacer(Modifier.height(10.dp))
                         CompactMetrics(state, gpsStale)
                     }
                 }
             } else {
+                DestinationCard(query, routeUi, onQueryChange, onFindRoute, onQuickRoute, onClearRoute)
+                Spacer(Modifier.height(10.dp))
                 ManeuverCard(route, routeUi)
                 Spacer(Modifier.height(10.dp))
                 NavigationMapHost(mapView, Modifier.fillMaxWidth().height(285.dp))
                 Spacer(Modifier.height(10.dp))
                 LaneCard(state, laneNumber, laneCount, gpsStale)
-                Spacer(Modifier.height(10.dp))
-                DestinationCard(query, routeUi, onQueryChange, onFindRoute, onClearRoute)
                 Spacer(Modifier.height(10.dp))
                 CompactMetrics(state, gpsStale)
             }
@@ -705,10 +712,7 @@ private fun ManeuverCard(route: OpenRouteClient.RouteSummary?, routeUi: Navigati
                     fontWeight = FontWeight.ExtraBold,
                 )
                 Text(
-                    when {
-                        routeUi.rerouting -> "REROUTING…"
-                        else -> "LIVE ROUTE"
-                    },
+                    if (routeUi.rerouting) "REROUTING…" else "LIVE ROUTE",
                     color = if (routeUi.rerouting) NavAmber else NavGreen,
                     fontSize = 10.sp,
                     fontWeight = FontWeight.ExtraBold,
@@ -868,15 +872,63 @@ private fun DestinationCard(
     routeUi: NavigationRouteUi,
     onQueryChange: (String) -> Unit,
     onFindRoute: () -> Unit,
+    onQuickRoute: (String) -> Unit,
     onClearRoute: () -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val focusManager = LocalFocusManager.current
     val store = remember { DestinationStore(context.applicationContext) }
     val photon = remember { PhotonSearchClient() }
     var saved by remember { mutableStateOf(store.saved()) }
     var recent by remember { mutableStateOf(store.recent()) }
+    var home by remember { mutableStateOf(store.home()) }
+    var work by remember { mutableStateOf(store.work()) }
     var remoteSuggestions by remember { mutableStateOf<List<PhotonSearchClient.Suggestion>>(emptyList()) }
     var searching by remember { mutableStateOf(false) }
+    var queryFocused by remember { mutableStateOf(false) }
+
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
+    var voiceState by remember {
+        mutableStateOf(
+            NavigationVoiceController.State(
+                ready = false,
+                muted = false,
+                voices = emptyList(),
+                selectedVoiceId = NavigationVoiceController.DEFAULT_VOICE_ID,
+            )
+        )
+    }
+    val voiceController = remember {
+        NavigationVoiceController(context.applicationContext) { state ->
+            mainHandler.post { voiceState = state }
+        }
+    }
+    var voiceMenuExpanded by remember { mutableStateOf(false) }
+
+    DisposableEffect(voiceController) {
+        onDispose { voiceController.shutdown() }
+    }
+
+    LaunchedEffect(Unit) {
+        voiceState = voiceController.state()
+    }
+
+    LaunchedEffect(routeUi.summary?.routeStartedAtMillis) {
+        routeUi.summary?.let { voiceController.onRouteStarted(it) }
+    }
+
+    LaunchedEffect(
+        routeUi.summary?.progressIndex,
+        routeUi.summary?.nextManeuver,
+        routeUi.summary?.nextManeuverDistanceMeters?.roundToInt(),
+        routeUi.summary?.arrived,
+    ) {
+        routeUi.summary?.let { voiceController.onProgress(it) }
+    }
+
+    LaunchedEffect(routeUi.rerouting) {
+        if (routeUi.rerouting) voiceController.announceRerouting()
+    }
 
     LaunchedEffect(routeUi.summary?.destinationName) {
         val destination = routeUi.summary?.destinationName?.trim().orEmpty()
@@ -901,8 +953,15 @@ private fun DestinationCard(
         searching = false
     }
 
-    val localMatches = remember(query, saved, recent) { store.localMatches(query) }
-    val showSuggestions = localMatches.isNotEmpty() || remoteSuggestions.isNotEmpty() || searching
+    val localMatches = remember(query, saved, recent, home, work) { store.localMatches(query) }
+    val showSuggestions = queryFocused &&
+        (localMatches.isNotEmpty() || remoteSuggestions.isNotEmpty() || searching)
+    val quickCandidate = routeUi.summary?.destinationName?.trim()?.takeIf { it.isNotBlank() }
+        ?: query.trim().takeIf { it.isNotBlank() }
+    val selectedVoiceLabel = voiceState.voices
+        .firstOrNull { it.id == voiceState.selectedVoiceId }
+        ?.label
+        ?: "System default"
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -912,10 +971,90 @@ private fun DestinationCard(
         Column(Modifier.padding(13.dp)) {
             Text("Where are you going?", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
             Spacer(Modifier.height(7.dp))
+
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        focusManager.clearFocus()
+                        if (home != null) {
+                            onQuickRoute(home!!)
+                        } else if (quickCandidate != null) {
+                            store.setHome(quickCandidate)
+                            home = store.home()
+                            recent = store.recent()
+                        }
+                    },
+                    enabled = !routeUi.planning && (home != null || quickCandidate != null),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(if (home == null) "SET HOME" else "⌂ HOME", maxLines = 1)
+                }
+                OutlinedButton(
+                    onClick = {
+                        focusManager.clearFocus()
+                        if (work != null) {
+                            onQuickRoute(work!!)
+                        } else if (quickCandidate != null) {
+                            store.setWork(quickCandidate)
+                            work = store.work()
+                            recent = store.recent()
+                        }
+                    },
+                    enabled = !routeUi.planning && (work != null || quickCandidate != null),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(if (work == null) "SET WORK" else "▣ WORK", maxLines = 1)
+                }
+            }
+
+            Spacer(Modifier.height(7.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                OutlinedButton(
+                    onClick = { voiceController.setMuted(!voiceState.muted) },
+                    enabled = voiceState.ready,
+                    modifier = Modifier.weight(0.8f),
+                ) {
+                    Text(
+                        when {
+                            !voiceState.ready -> "VOICE…"
+                            voiceState.muted -> "🔇 MUTED"
+                            else -> "🔊 VOICE"
+                        },
+                        maxLines = 1,
+                    )
+                }
+                Box(Modifier.weight(1.2f)) {
+                    OutlinedButton(
+                        onClick = { voiceMenuExpanded = true },
+                        enabled = voiceState.ready && voiceState.voices.isNotEmpty(),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(selectedVoiceLabel, maxLines = 1)
+                    }
+                    DropdownMenu(
+                        expanded = voiceMenuExpanded,
+                        onDismissRequest = { voiceMenuExpanded = false },
+                    ) {
+                        voiceState.voices.forEach { option ->
+                            DropdownMenuItem(
+                                text = { Text(option.label) },
+                                onClick = {
+                                    voiceController.selectVoice(option.id)
+                                    voiceMenuExpanded = false
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(7.dp))
             OutlinedTextField(
                 value = query,
                 onValueChange = onQueryChange,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onFocusChanged { queryFocused = it.isFocused },
                 singleLine = true,
                 placeholder = { Text("Address, place or business") },
                 enabled = !routeUi.planning,
@@ -931,7 +1070,7 @@ private fun DestinationCard(
                     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                         if (query.isBlank() && localMatches.isNotEmpty()) {
                             Text(
-                                "SAVED & RECENT",
+                                "HOME · WORK · SAVED · RECENT",
                                 color = NavMuted,
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.ExtraBold,
@@ -958,7 +1097,7 @@ private fun DestinationCard(
                                             modifier = Modifier.fillMaxWidth(),
                                         )
                                         Text(
-                                            when {
+                                            item.quickLabel ?: when {
                                                 item.saved -> "Saved"
                                                 item.recent -> "Recent"
                                                 else -> ""
@@ -969,11 +1108,13 @@ private fun DestinationCard(
                                         )
                                     }
                                 }
-                                TextButton(onClick = {
-                                    store.toggleSaved(item.label)
-                                    saved = store.saved()
-                                }) {
-                                    Text(if (store.isSaved(item.label)) "★" else "☆", color = NavBlueSoft)
+                                if (item.quickLabel == null) {
+                                    TextButton(onClick = {
+                                        store.toggleSaved(item.label)
+                                        saved = store.saved()
+                                    }) {
+                                        Text(if (store.isSaved(item.label)) "★" else "☆", color = NavBlueSoft)
+                                    }
                                 }
                             }
                         }
@@ -1040,14 +1181,23 @@ private fun DestinationCard(
             Spacer(Modifier.height(7.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
-                    onClick = onFindRoute,
+                    onClick = {
+                        focusManager.clearFocus()
+                        onFindRoute()
+                    },
                     enabled = query.isNotBlank() && !routeUi.planning,
                     modifier = Modifier.weight(1f),
                 ) {
                     Text(if (routeUi.planning) "FINDING…" else "FIND ROUTE")
                 }
                 if (routeUi.summary != null || routeUi.waitingForGps) {
-                    OutlinedButton(onClick = onClearRoute) { Text("CLEAR") }
+                    OutlinedButton(
+                        onClick = {
+                            focusManager.clearFocus()
+                            onClearRoute()
+                            voiceController.resetRoute()
+                        }
+                    ) { Text("CLEAR") }
                 }
             }
             routeUi.error?.takeIf { routeUi.summary == null }?.let {
@@ -1074,6 +1224,22 @@ private fun DestinationCard(
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
                         )
+                    }
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = {
+                        store.setHome(route.destinationName)
+                        home = store.home()
+                        recent = store.recent()
+                    }) {
+                        Text("USE AS HOME", color = NavMuted, fontSize = 9.sp)
+                    }
+                    TextButton(onClick = {
+                        store.setWork(route.destinationName)
+                        work = store.work()
+                        recent = store.recent()
+                    }) {
+                        Text("USE AS WORK", color = NavMuted, fontSize = 9.sp)
                     }
                 }
             }
