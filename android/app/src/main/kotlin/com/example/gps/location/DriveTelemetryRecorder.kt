@@ -5,6 +5,7 @@ import android.content.Context
 import android.os.Environment
 import android.provider.MediaStore
 import com.example.gps.route.NavigationTelemetryRuntime
+import com.example.gps.route.NavigationVoiceTelemetryRuntime
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -18,6 +19,7 @@ class DriveTelemetryRecorder(context: Context) {
     fun startNew() {
         logDir.mkdirs()
         NavigationTelemetryRuntime.resetForDrive()
+        NavigationVoiceTelemetryRuntime.resetForDrive()
         logFile.writeText(HEADER + "\n")
     }
 
@@ -145,6 +147,7 @@ class DriveTelemetryRecorder(context: Context) {
         }
         val fixStale = fixAgeMillis != null && fixAgeMillis > STALE_FIX_MS
         val nav = NavigationTelemetryRuntime.snapshot()
+        val voice = NavigationVoiceTelemetryRuntime.snapshot()
 
         return listOf(
             (fixTimestampMillis ?: recordedAtMillis).toString(),
@@ -188,6 +191,15 @@ class DriveTelemetryRecorder(context: Context) {
             nav.arrived.toString(),
             nav.rerouteCount.toString(),
             nav.updatedAtMillis.takeIf { it > 0L }?.toString() ?: "",
+            voice.ready.toString(),
+            voice.muted.toString(),
+            csv(voice.selectedVoiceId),
+            csv(voice.selectedVoiceLabel),
+            voice.speakAttempts.toString(),
+            csv(voice.lastUtterance),
+            voice.lastSpeakResult?.toString() ?: "",
+            voice.lastAttemptAtMillis.takeIf { it > 0L }?.toString() ?: "",
+            voice.updatedAtMillis.takeIf { it > 0L }?.toString() ?: "",
         ).joinToString(",")
     }
 
@@ -216,6 +228,8 @@ class DriveTelemetryRecorder(context: Context) {
                 "lane_count,lane_confidence,exact_lane_claim,recorded_at_ms,fix_timestamp_ms,fix_age_ms,fix_stale," +
                 "nav_event,nav_destination,nav_next_maneuver,nav_next_road,nav_maneuver_distance_m," +
                 "nav_remaining_distance_m,nav_remaining_seconds,nav_off_route_m,nav_route_point_index," +
-                "nav_maneuver_index,nav_arrived,nav_reroute_count,nav_updated_at_ms"
+                "nav_maneuver_index,nav_arrived,nav_reroute_count,nav_updated_at_ms," +
+                "voice_ready,voice_muted,voice_selected_id,voice_selected_label,voice_speak_attempts," +
+                "voice_last_utterance,voice_last_result,voice_last_attempt_ms,voice_updated_at_ms"
     }
 }
