@@ -1,6 +1,7 @@
 package com.example.gps.route
 
 import com.example.gps.laneengine.GeoPoint
+import com.example.gps.laneengine.RerouteStartupGuard
 import com.example.gps.laneengine.RouteProgressTracker
 import org.json.JSONArray
 import org.json.JSONObject
@@ -57,6 +58,7 @@ class OpenRouteClient {
         val totalRouteMeters: Double = distanceMeters,
         val totalRouteSeconds: Double = durationSeconds,
         val progressIndex: Int = 0,
+        val routeStartedAtMillis: Long = System.currentTimeMillis(),
         val offRouteDistanceMeters: Double = 0.0,
         val arrived: Boolean = false,
         val source: String = "OSM · OSRM",
@@ -113,7 +115,7 @@ class OpenRouteClient {
             previousIndex = route.progressIndex,
         )
         val nearestIndex = progress.routeIndex
-        val offRoute = progress.crossTrackMeters
+        val rawOffRoute = progress.crossTrackMeters
         val destinationDistance = distanceMeters(
             current,
             RoutePoint(route.destinationLat, route.destinationLon),
@@ -139,6 +141,14 @@ class OpenRouteClient {
         } else {
             0.0
         }
+
+        val routeProgressMeters = (route.totalRouteMeters - remaining).coerceAtLeast(0.0)
+        val routeAgeMillis = (System.currentTimeMillis() - route.routeStartedAtMillis).coerceAtLeast(0L)
+        val offRoute = RerouteStartupGuard.effectiveOffRouteMeters(
+            rawOffRouteMeters = rawOffRoute,
+            routeAgeMillis = routeAgeMillis,
+            routeProgressMeters = routeProgressMeters,
+        )
 
         val nextIndex = if (arrived) {
             -1
@@ -281,6 +291,7 @@ class OpenRouteClient {
             totalRouteMeters = totalDistance,
             totalRouteSeconds = totalDuration,
             progressIndex = 0,
+            routeStartedAtMillis = System.currentTimeMillis(),
         )
         return updateProgress(initial, originLat, originLon)
     }
