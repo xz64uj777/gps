@@ -144,6 +144,8 @@ class NavigationActivity : ComponentActivity() {
             readyMap.uiSettings.isCompassEnabled = true
             readyMap.uiSettings.isLogoEnabled = true
             readyMap.uiSettings.isAttributionEnabled = true
+            readyMap.uiSettings.isRotateGesturesEnabled = true
+            readyMap.uiSettings.isTiltGesturesEnabled = true
             readyMap.setStyle(MAP_STYLE_URI) { style ->
                 installNavigationLayers(style)
                 mapStyleReady = true
@@ -170,14 +172,23 @@ class NavigationActivity : ComponentActivity() {
                         routeQuery = it
                         NavigationRuntimeCache.query = it
                     },
-                    onFindRoute = { requestRoutePlan() },
                     onQuickRoute = { quick ->
                         routeQuery = quick
                         NavigationRuntimeCache.query = quick
-                        requestRoutePlan(quick)
+                        if (sessionActive) {
+                            requestRoutePlan(quick)
+                        } else {
+                            startDrive()
+                        }
                     },
                     onClearRoute = { clearRoute() },
-                    onStartDrive = { startDrive() },
+                    onPrimaryAction = {
+                        if (sessionActive) {
+                            if (routeQuery.isNotBlank()) requestRoutePlan()
+                        } else {
+                            startDrive()
+                        }
+                    },
                     onStopDrive = { stopDrive() },
                     onEnableLocation = { requestDrivePermissions(false) },
                     onOpenDiagnostics = { startActivity(Intent(this, MainActivity::class.java)) },
@@ -231,7 +242,7 @@ class NavigationActivity : ComponentActivity() {
     private fun requestRoutePlan(queryOverride: String? = null) {
         val query = (queryOverride ?: routeQuery).trim()
         if (query.isBlank()) {
-            routeUi = routeUi.copy(error = "Enter where you're going first.")
+            routeUi = routeUi.copy(error = "Enter a destination, or leave it blank for Free Drive.")
             return
         }
         routeQuery = query
@@ -244,11 +255,7 @@ class NavigationActivity : ComponentActivity() {
             pendingRouteQuery = query
             routeUi = routeUi.copy(
                 waitingForGps = true,
-                error = if (sessionActive) {
-                    "Waiting for a fresh GPS fix. Route will start automatically."
-                } else {
-                    "Destination saved. Start Drive while parked; the route will start when GPS locks."
-                },
+                error = "Waiting for a fresh GPS fix. Navigation will start automatically.",
             )
         }
     }
@@ -342,6 +349,14 @@ class NavigationActivity : ComponentActivity() {
         updateMapFromState(uiState, null, forceCamera = true)
     }
 
+    private fun clearRouteForFreeDrive() {
+        pendingRouteQuery = null
+        NavigationRuntimeCache.route = null
+        routeUi = NavigationRouteUi()
+        offRouteFixStreak = 0
+        updateMapFromState(uiState, null, forceCamera = true)
+    }
+
     private fun freshLocation(state: GnssUiState): Boolean {
         val timestamp = state.lastUpdateMillis ?: return false
         if (!state.fixReceived || state.latitude == null || state.longitude == null) return false
@@ -357,9 +372,23 @@ class NavigationActivity : ComponentActivity() {
     }
 
     private fun startDriveInternal() {
+        val destination = routeQuery.trim()
+        if (destination.isBlank()) {
+            clearRouteForFreeDrive()
+        } else {
+            NavigationRuntimeCache.query = destination
+            NavigationRuntimeCache.route = null
+            pendingRouteQuery = destination
+            routeUi = NavigationRouteUi(
+                waitingForGps = true,
+                error = "Starting GPS and building your route…",
+            )
+        }
+
         sessionActive = true
-        uiState = GnssUiState(message = "Starting drive…")
+        uiState = GnssUiState(message = if (destination.isBlank()) "Starting Free Drive…" else "Starting navigation…")
         lastProgressFixTimestamp = null
+        lastMapFixTimestamp = null
         val intent = Intent(this, DriveTrackingService::class.java)
             .setAction(DriveTrackingService.ACTION_START)
             .putExtra(DriveTrackingService.EXTRA_RESET, true)
@@ -463,14 +492,27 @@ class NavigationActivity : ComponentActivity() {
         if (lat != null && lon != null && shouldMoveCamera) {
             lastMapFixTimestamp = fixTimestamp
             val heading = (state.fusedHeadingDegrees ?: state.bearingDegrees ?: 0f).toDouble()
-            val moving = (state.speedMps ?: 0f) >= 3f
+            val moving = (state.speedMps ?: 0f) >= 1.5f
+            val driveFollow = sessionActive
             val camera = CameraPosition.Builder()
                 .target(LatLng(lat, lon))
-                .zoom(if (moving) 16.7 else 16.2)
-                .bearing(if (moving) heading else 0.0)
-                .tilt(if (moving) 48.0 else 0.0)
+                .zoom(
+                    when {
+                        moving -> 17.3
+                        driveFollow -> 16.9
+                        else -> 16.2
+                    }
+                )
+                .bearing(if (driveFollow || moving) heading else 0.0)
+                .tilt(
+                    when {
+                        driveFollow -> 58.0
+                        moving -> 48.0
+                        else -> 0.0
+                    }
+                )
                 .build()
-            map?.easeCamera(CameraUpdateFactory.newCameraPosition(camera), 500)
+            map?.easeCamera(CameraUpdateFactory.newCameraPosition(camera), 450)
         }
     }
 
@@ -529,10 +571,9 @@ private fun NavigationScreen(
     routeUi: NavigationRouteUi,
     mapView: MapView,
     onQueryChange: (String) -> Unit,
-    onFindRoute: () -> Unit,
     onQuickRoute: (String) -> Unit,
     onClearRoute: () -> Unit,
-    onStartDrive: () -> Unit,
+    onPrimaryAction: () -> Unit,
     onStopDrive: () -> Unit,
     onEnableLocation: () -> Unit,
     onOpenDiagnostics: () -> Unit,
@@ -565,7 +606,7 @@ private fun NavigationScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = if (wide) 20.dp else 14.dp, vertical = 12.dp)
         ) {
-            NavigationHeader(sessionActive, gpsStale, routeUi.rerouting)
+            NavigationHeader(sessionActive, gpsStale, routeUi.rerouting, route != null)
             Spacer(Modifier.height(10.dp))
 
             if (gpsStale) {
@@ -584,45 +625,81 @@ private fun NavigationScreen(
                     verticalAlignment = Alignment.Top,
                 ) {
                     Column(Modifier.weight(1.25f)) {
-                        ManeuverCard(route, routeUi)
+                        ManeuverCard(route, routeUi, sessionActive)
                         Spacer(Modifier.height(10.dp))
-                        NavigationMapHost(mapView, Modifier.fillMaxWidth().height(430.dp))
-                    }
-                    Column(Modifier.weight(0.75f)) {
                         LaneCard(state, laneNumber, laneCount, gpsStale)
                         Spacer(Modifier.height(10.dp))
-                        DestinationCard(query, routeUi, onQueryChange, onFindRoute, onQuickRoute, onClearRoute)
+                        NavigationMapHost(mapView, Modifier.fillMaxWidth().height(440.dp))
+                    }
+                    Column(Modifier.weight(0.75f)) {
+                        DestinationCard(
+                            query = query,
+                            routeUi = routeUi,
+                            sessionActive = sessionActive,
+                            onQueryChange = onQueryChange,
+                            onQuickRoute = onQuickRoute,
+                            onClearRoute = onClearRoute,
+                            onPrimaryAction = onPrimaryAction,
+                        )
                         Spacer(Modifier.height(10.dp))
                         CompactMetrics(state, gpsStale)
                     }
                 }
-            } else {
-                DestinationCard(query, routeUi, onQueryChange, onFindRoute, onQuickRoute, onClearRoute)
-                Spacer(Modifier.height(10.dp))
-                ManeuverCard(route, routeUi)
-                Spacer(Modifier.height(10.dp))
-                NavigationMapHost(mapView, Modifier.fillMaxWidth().height(285.dp))
+            } else if (sessionActive) {
+                ManeuverCard(route, routeUi, true)
                 Spacer(Modifier.height(10.dp))
                 LaneCard(state, laneNumber, laneCount, gpsStale)
+                Spacer(Modifier.height(10.dp))
+                NavigationMapHost(mapView, Modifier.fillMaxWidth().height(340.dp))
+                Spacer(Modifier.height(10.dp))
+                CompactMetrics(state, gpsStale)
+                Spacer(Modifier.height(10.dp))
+                DestinationCard(
+                    query = query,
+                    routeUi = routeUi,
+                    sessionActive = true,
+                    onQueryChange = onQueryChange,
+                    onQuickRoute = onQuickRoute,
+                    onClearRoute = onClearRoute,
+                    onPrimaryAction = onPrimaryAction,
+                )
+            } else {
+                DestinationCard(
+                    query = query,
+                    routeUi = routeUi,
+                    sessionActive = false,
+                    onQueryChange = onQueryChange,
+                    onQuickRoute = onQuickRoute,
+                    onClearRoute = onClearRoute,
+                    onPrimaryAction = onPrimaryAction,
+                )
+                Spacer(Modifier.height(10.dp))
+                LaneCard(state, laneNumber, laneCount, gpsStale)
+                Spacer(Modifier.height(10.dp))
+                ManeuverCard(route, routeUi, false)
+                Spacer(Modifier.height(10.dp))
+                NavigationMapHost(mapView, Modifier.fillMaxWidth().height(320.dp))
                 Spacer(Modifier.height(10.dp))
                 CompactMetrics(state, gpsStale)
             }
 
-            Spacer(Modifier.height(12.dp))
-            Button(
-                onClick = if (sessionActive) onStopDrive else onStartDrive,
-                modifier = Modifier.fillMaxWidth().height(58.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (sessionActive) NavRed else NavBlue,
-                    contentColor = Color(0xFF07101E),
-                ),
-                shape = RoundedCornerShape(16.dp),
-            ) {
-                Text(
-                    if (sessionActive) "STOP & SAVE DRIVE" else "START DRIVE",
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 16.sp,
-                )
+            if (sessionActive) {
+                Spacer(Modifier.height(12.dp))
+                Button(
+                    onClick = onStopDrive,
+                    modifier = Modifier.fillMaxWidth().height(58.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = NavRed,
+                        contentColor = Color(0xFF07101E),
+                    ),
+                    shape = RoundedCornerShape(16.dp),
+                ) {
+                    Text(
+                        "STOP & SAVE DRIVE",
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 16.sp,
+                    )
+                }
             }
 
             if (!state.permissionFine && !sessionActive) {
@@ -642,7 +719,12 @@ private fun NavigationScreen(
 }
 
 @Composable
-private fun NavigationHeader(sessionActive: Boolean, gpsStale: Boolean, rerouting: Boolean) {
+private fun NavigationHeader(
+    sessionActive: Boolean,
+    gpsStale: Boolean,
+    rerouting: Boolean,
+    routed: Boolean,
+) {
     Row(
         Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -650,12 +732,21 @@ private fun NavigationHeader(sessionActive: Boolean, gpsStale: Boolean, reroutin
     ) {
         Column {
             Text("LaneGPS", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold)
-            Text("Lane-first navigation", color = NavMuted, fontSize = 12.sp)
+            Text(
+                when {
+                    sessionActive && routed -> "3D lane-first navigation"
+                    sessionActive -> "3D Free Drive · live lane sensing"
+                    else -> "Lane-first navigation"
+                },
+                color = NavMuted,
+                fontSize = 12.sp,
+            )
         }
         val text = when {
             gpsStale -> "GPS LOST"
             rerouting -> "REROUTING"
-            sessionActive -> "LIVE"
+            sessionActive && routed -> "NAV"
+            sessionActive -> "FREE DRIVE"
             else -> "READY"
         }
         val color = when {
@@ -669,7 +760,7 @@ private fun NavigationHeader(sessionActive: Boolean, gpsStale: Boolean, reroutin
                 text,
                 color = color,
                 fontWeight = FontWeight.ExtraBold,
-                fontSize = 11.sp,
+                fontSize = 10.sp,
                 modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
             )
         }
@@ -690,7 +781,11 @@ private fun StatusBanner(title: String, text: String, color: Color) {
 }
 
 @Composable
-private fun ManeuverCard(route: OpenRouteClient.RouteSummary?, routeUi: NavigationRouteUi) {
+private fun ManeuverCard(
+    route: OpenRouteClient.RouteSummary?,
+    routeUi: NavigationRouteUi,
+    sessionActive: Boolean,
+) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = NavCardStrong),
@@ -698,9 +793,31 @@ private fun ManeuverCard(route: OpenRouteClient.RouteSummary?, routeUi: Navigati
     ) {
         Column(Modifier.padding(16.dp)) {
             if (route == null) {
-                Text("NO ACTIVE ROUTE", color = NavMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                Text("Choose a destination", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 24.sp)
-                Text("The map and live maneuver guidance will start after a route is found.", color = NavMuted, fontSize = 12.sp)
+                Text(
+                    if (sessionActive) "FREE DRIVE" else "READY",
+                    color = if (sessionActive) NavGreen else NavMuted,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    if (sessionActive) "Live road follow" else "Destination optional",
+                    color = Color.White,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 24.sp,
+                )
+                Text(
+                    if (sessionActive) {
+                        "3D map follow and lane sensing are running without a destination."
+                    } else {
+                        "Enter a destination and tap Start Navigation, or leave it blank for Free Drive."
+                    },
+                    color = NavMuted,
+                    fontSize = 12.sp,
+                )
+                routeUi.error?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, color = NavAmber, fontSize = 11.sp)
+                }
                 return@Column
             }
 
@@ -712,7 +829,7 @@ private fun ManeuverCard(route: OpenRouteClient.RouteSummary?, routeUi: Navigati
                     fontWeight = FontWeight.ExtraBold,
                 )
                 Text(
-                    if (routeUi.rerouting) "REROUTING…" else "LIVE ROUTE",
+                    if (routeUi.rerouting) "REROUTING…" else "3D LIVE ROUTE",
                     color = if (routeUi.rerouting) NavAmber else NavGreen,
                     fontSize = 10.sp,
                     fontWeight = FontWeight.ExtraBold,
@@ -754,10 +871,27 @@ private fun NavigationMapHost(mapView: MapView, modifier: Modifier) {
         colors = CardDefaults.cardColors(containerColor = NavCard),
         shape = RoundedCornerShape(20.dp),
     ) {
-        AndroidView(
-            factory = { mapView },
-            modifier = Modifier.fillMaxSize(),
-        )
+        Box(Modifier.fillMaxSize()) {
+            AndroidView(
+                factory = { mapView },
+                modifier = Modifier.fillMaxSize(),
+            )
+            Surface(
+                color = Color(0xCC080D15),
+                shape = RoundedCornerShape(99.dp),
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(10.dp),
+            ) {
+                Text(
+                    "3D FOLLOW",
+                    color = NavGreen,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                )
+            }
+        }
     }
 }
 
@@ -768,8 +902,9 @@ private fun LaneCard(
     laneCount: Int?,
     gpsStale: Boolean,
 ) {
-    val known = laneNumber != null && laneCount != null && laneNumber in 1..laneCount
-    val exact = known && state.laneExactClaim && !gpsStale
+    val countKnown = laneCount != null && laneCount in 1..8
+    val laneKnown = countKnown && laneNumber != null && laneNumber in 1..laneCount!!
+    val exact = laneKnown && state.laneExactClaim && !gpsStale
     val accent = if (exact) NavGreen else NavAmber
 
     Card(
@@ -780,24 +915,26 @@ private fun LaneCard(
         Column(Modifier.padding(14.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Column {
-                    Text("CURRENT LANE", color = NavMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    Text("ROAD LANES", color = NavBlue, fontSize = 10.sp, fontWeight = FontWeight.ExtraBold)
                     Text(
                         when {
                             gpsStale -> "GPS LOST"
                             exact -> "LANE $laneNumber OF $laneCount"
-                            known -> "LIKELY $laneNumber OF $laneCount"
-                            else -> "FINDING LANE"
+                            laneKnown -> "LIKELY $laneNumber OF $laneCount"
+                            countKnown -> "$laneCount LANES · POSITION UNCERTAIN"
+                            else -> "SCANNING ROAD LANES"
                         },
                         color = when {
                             gpsStale -> NavRed
-                            known -> accent
-                            else -> NavBlueSoft
+                            laneKnown -> accent
+                            countKnown -> NavBlueSoft
+                            else -> NavMuted
                         },
                         fontWeight = FontWeight.ExtraBold,
-                        fontSize = 21.sp,
+                        fontSize = if (countKnown) 20.sp else 18.sp,
                     )
                 }
-                if (known) {
+                if (laneKnown) {
                     Text(
                         "${(state.laneConfidence.coerceIn(0f, 1f) * 100).roundToInt()}%",
                         color = Color.White,
@@ -807,47 +944,72 @@ private fun LaneCard(
             }
 
             Spacer(Modifier.height(12.dp))
-            if (known) {
+            if (countKnown) {
                 Row(
-                    Modifier.fillMaxWidth().height(82.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    Modifier.fillMaxWidth().height(96.dp),
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
                 ) {
                     repeat(laneCount!!) { index ->
-                        val current = index + 1 == laneNumber
+                        val current = laneKnown && index + 1 == laneNumber
                         Box(
                             Modifier
                                 .weight(1f)
                                 .fillMaxHeight()
                                 .background(
-                                    if (current) accent.copy(alpha = 0.28f) else Color(0xFF0C1220),
-                                    RoundedCornerShape(10.dp),
+                                    when {
+                                        current -> accent.copy(alpha = 0.30f)
+                                        else -> Color(0xFF0C1423)
+                                    },
+                                    RoundedCornerShape(11.dp),
                                 )
                                 .border(
                                     width = if (current) 2.dp else 1.dp,
-                                    color = if (current) accent else NavLine,
-                                    shape = RoundedCornerShape(10.dp),
+                                    color = if (current) accent else NavBlue.copy(alpha = 0.35f),
+                                    shape = RoundedCornerShape(11.dp),
                                 ),
                             contentAlignment = Alignment.Center,
                         ) {
-                            Text(
-                                "${index + 1}",
-                                color = if (current) Color.White else NavMuted,
-                                fontWeight = if (current) FontWeight.ExtraBold else FontWeight.Normal,
-                                fontSize = 17.sp,
-                            )
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    "↑",
+                                    color = if (current) Color.White else NavBlueSoft,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 26.sp,
+                                )
+                                Text(
+                                    "${index + 1}",
+                                    color = if (current) Color.White else NavMuted,
+                                    fontWeight = if (current) FontWeight.ExtraBold else FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                )
+                            }
                         }
                     }
                 }
+                Spacer(Modifier.height(7.dp))
+                Text(
+                    when {
+                        exact -> "Green = LaneGPS has enough evidence for an exact current-lane claim."
+                        laneKnown -> "Amber = likely current lane; GPS uncertainty is still being respected."
+                        else -> "Road lane count is known; LaneGPS is still deciding which lane you occupy."
+                    },
+                    color = NavMuted,
+                    fontSize = 10.sp,
+                )
             } else {
                 Box(
                     Modifier
                         .fillMaxWidth()
-                        .height(70.dp)
+                        .height(78.dp)
                         .background(Color(0xFF0C1220), RoundedCornerShape(12.dp)),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
-                        if (gpsStale) "Waiting for fresh GPS" else "Road geometry is live; lane position needs more evidence",
+                        when {
+                            gpsStale -> "Waiting for fresh GPS"
+                            state.laneCandidateCount > 0 -> "${state.laneCandidateCount} road candidate(s) nearby · collecting lane-count evidence"
+                            else -> "Waiting for nearby OSM lane geometry"
+                        },
                         color = NavMuted,
                         textAlign = TextAlign.Center,
                         fontSize = 12.sp,
@@ -860,7 +1022,7 @@ private fun LaneCard(
             Row(Modifier.fillMaxWidth()) {
                 Text("TARGET LANES", color = NavBlue, fontSize = 10.sp, fontWeight = FontWeight.ExtraBold)
                 Spacer(Modifier.width(8.dp))
-                Text("route-to-lane connection next", color = NavMuted, fontSize = 10.sp)
+                Text("route-to-lane guidance still in development", color = NavMuted, fontSize = 10.sp)
             }
         }
     }
@@ -870,10 +1032,11 @@ private fun LaneCard(
 private fun DestinationCard(
     query: String,
     routeUi: NavigationRouteUi,
+    sessionActive: Boolean,
     onQueryChange: (String) -> Unit,
-    onFindRoute: () -> Unit,
     onQuickRoute: (String) -> Unit,
     onClearRoute: () -> Unit,
+    onPrimaryAction: () -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val focusManager = LocalFocusManager.current
@@ -969,7 +1132,21 @@ private fun DestinationCard(
         shape = RoundedCornerShape(18.dp),
     ) {
         Column(Modifier.padding(13.dp)) {
-            Text("Where are you going?", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            Text(
+                if (sessionActive) "Destination" else "Where are you going?",
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                fontSize = 16.sp,
+            )
+            Text(
+                if (sessionActive) {
+                    "Change this only while parked."
+                } else {
+                    "Enter a destination, or leave blank for Free Drive."
+                },
+                color = NavMuted,
+                fontSize = 10.sp,
+            )
             Spacer(Modifier.height(7.dp))
 
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
@@ -1084,7 +1261,10 @@ private fun DestinationCard(
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 TextButton(
-                                    onClick = { onQueryChange(item.label) },
+                                    onClick = {
+                                        onQueryChange(item.label)
+                                        focusManager.clearFocus()
+                                    },
                                     modifier = Modifier.weight(1f),
                                 ) {
                                     Column(Modifier.fillMaxWidth()) {
@@ -1122,20 +1302,21 @@ private fun DestinationCard(
                         remoteSuggestions
                             .filterNot { remote ->
                                 localMatches.any { local ->
-                                    remote.label.equals(local.label, ignoreCase = true)
+                                    remote.fullLabel().equals(local.label, ignoreCase = true)
                                 }
                             }
                             .take(5)
                             .forEach { suggestion ->
-                                val fullLabel = listOf(suggestion.label, suggestion.subtitle)
-                                    .filter { it.isNotBlank() }
-                                    .joinToString(", ")
+                                val fullLabel = suggestion.fullLabel()
                                 Row(
                                     Modifier.fillMaxWidth().padding(horizontal = 4.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
                                     TextButton(
-                                        onClick = { onQueryChange(fullLabel) },
+                                        onClick = {
+                                            onQueryChange(fullLabel)
+                                            focusManager.clearFocus()
+                                        },
                                         modifier = Modifier.weight(1f),
                                     ) {
                                         Column(Modifier.fillMaxWidth()) {
@@ -1151,7 +1332,7 @@ private fun DestinationCard(
                                                     suggestion.subtitle,
                                                     color = NavMuted,
                                                     fontSize = 9.sp,
-                                                    maxLines = 1,
+                                                    maxLines = 2,
                                                     modifier = Modifier.fillMaxWidth(),
                                                 )
                                             }
@@ -1168,7 +1349,7 @@ private fun DestinationCard(
 
                         if (searching) {
                             Text(
-                                "Searching addresses…",
+                                "Searching nearby addresses…",
                                 color = NavMuted,
                                 fontSize = 10.sp,
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
@@ -1178,17 +1359,25 @@ private fun DestinationCard(
                 }
             }
 
-            Spacer(Modifier.height(7.dp))
+            Spacer(Modifier.height(8.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
                     onClick = {
                         focusManager.clearFocus()
-                        onFindRoute()
+                        onPrimaryAction()
                     },
-                    enabled = query.isNotBlank() && !routeUi.planning,
-                    modifier = Modifier.weight(1f),
+                    enabled = !routeUi.planning && (!sessionActive || query.isNotBlank()),
+                    modifier = Modifier.weight(1f).height(52.dp),
                 ) {
-                    Text(if (routeUi.planning) "FINDING…" else "FIND ROUTE")
+                    Text(
+                        when {
+                            routeUi.planning -> "BUILDING ROUTE…"
+                            sessionActive -> "ROUTE TO THIS"
+                            query.isBlank() -> "START FREE DRIVE"
+                            else -> "START NAVIGATION"
+                        },
+                        fontWeight = FontWeight.ExtraBold,
+                    )
                 }
                 if (routeUi.summary != null || routeUi.waitingForGps) {
                     OutlinedButton(
@@ -1196,10 +1385,12 @@ private fun DestinationCard(
                             focusManager.clearFocus()
                             onClearRoute()
                             voiceController.resetRoute()
-                        }
+                        },
+                        modifier = Modifier.height(52.dp),
                     ) { Text("CLEAR") }
                 }
             }
+
             routeUi.error?.takeIf { routeUi.summary == null }?.let {
                 Spacer(Modifier.height(6.dp))
                 Text(it, color = if (routeUi.waitingForGps) NavAmber else NavRed, fontSize = 11.sp)
@@ -1262,7 +1453,7 @@ private fun CompactMetrics(state: GnssUiState, gpsStale: Boolean) {
         )
         NavMetric(
             if (gpsStale) "—" else state.laneCandidateCount.toString(),
-            "lane candidates",
+            "road candidates",
             Modifier.weight(1f),
         )
     }
