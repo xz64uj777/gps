@@ -59,6 +59,26 @@ class PhysicalCarriagewayResolverTest {
     }
 
     @Test
+    fun sustainedThreeWayBundleDoesNotBecomeSevenLaneCarriageway() {
+        val resolver = PhysicalCarriagewayResolver()
+        val lanes = listOf(
+            lane("A0", "A", 0, -10.8),
+            lane("A1", "A", 1, -7.2),
+            lane("B0", "B", 0, -3.6),
+            lane("B1", "B", 1, 0.0),
+            lane("B2", "B", 2, 3.6),
+            lane("C0", "C", 0, 7.2),
+            lane("C1", "C", 1, 10.8),
+        )
+
+        listOf(0.0, 12.0, 24.0, 36.0, 48.0, 60.0).forEach { northMeters ->
+            val result = resolver.resolve(positionNorthMeters(northMeters), 0.0, lanes[3], lanes)
+            assertEquals(3, result.laneCount)
+            assertFalse(result.mergedSegments)
+        }
+    }
+
+    @Test
     fun overlappingSequentialWaysDoNotDoubleLaneCount() {
         val resolver = PhysicalCarriagewayResolver()
         val lanes = listOf(
