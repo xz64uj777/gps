@@ -116,9 +116,16 @@ class NavigationVoiceController(
         val maneuverKey = "$maneuver|$road"
         val changed = maneuverKey != lastManeuverKey
         val bucket = distanceBucket(route.nextManeuverDistanceMeters)
-        val crossedThreshold = bucket != null && bucket != lastDistanceBucket
+        val previousBucket = lastDistanceBucket
+        // Only announce a threshold when we move into a *closer* bucket.
+        // GPS/route jitter can briefly make the distance grow again; that must
+        // never re-arm a prompt we already spoke.
+        val crossedCloserThreshold = !changed &&
+            bucket != null &&
+            previousBucket != null &&
+            bucket < previousBucket
 
-        if (force || changed || crossedThreshold) {
+        if (force || changed || crossedCloserThreshold) {
             lastManeuverKey = maneuverKey
             lastDistanceBucket = bucket
             val distance = spokenDistance(route.nextManeuverDistanceMeters)
