@@ -57,7 +57,7 @@ class PhotonSearchClient {
             if (connection.responseCode !in 200..299) return emptyList()
             val body = connection.inputStream.bufferedReader().use { it.readText() }
             val features = JSONObject(body).optJSONArray("features") ?: return emptyList()
-            val suggestions = buildList {
+            val suggestions = buildList<Suggestion> {
                 for (index in 0 until features.length()) {
                     val feature = features.optJSONObject(index) ?: continue
                     val geometry = feature.optJSONObject("geometry") ?: continue
