@@ -11,6 +11,26 @@ class DestinationStore(context: Context) {
 
     fun saved(): List<String> = readList(KEY_SAVED)
 
+    fun home(): String? = prefs.getString(KEY_HOME, null)?.trim()?.takeIf { it.isNotBlank() }
+
+    fun work(): String? = prefs.getString(KEY_WORK, null)?.trim()?.takeIf { it.isNotBlank() }
+
+    fun setHome(label: String) {
+        writeQuick(KEY_HOME, label)
+    }
+
+    fun setWork(label: String) {
+        writeQuick(KEY_WORK, label)
+    }
+
+    fun clearHome() {
+        prefs.edit().remove(KEY_HOME).apply()
+    }
+
+    fun clearWork() {
+        prefs.edit().remove(KEY_WORK).apply()
+    }
+
     fun addRecent(label: String) {
         val clean = label.trim()
         if (clean.isBlank()) return
@@ -41,10 +61,20 @@ class DestinationStore(context: Context) {
 
     fun localMatches(query: String): List<LocalDestination> {
         val q = query.trim()
+        val home = home()
+        val work = work()
         val saved = saved()
         val recent = recent()
         val ordered = buildList {
-            saved.forEach { add(LocalDestination(it, true, false)) }
+            if (home != null) add(LocalDestination(home, saved = true, recent = false, quickLabel = "Home"))
+            if (work != null && !work.equals(home, ignoreCase = true)) {
+                add(LocalDestination(work, saved = true, recent = false, quickLabel = "Work"))
+            }
+            saved.forEach { label ->
+                if (none { it.label.equals(label, ignoreCase = true) }) {
+                    add(LocalDestination(label, true, false))
+                }
+            }
             recent.forEach { label ->
                 if (none { it.label.equals(label, ignoreCase = true) }) {
                     add(LocalDestination(label, false, true))
@@ -53,8 +83,15 @@ class DestinationStore(context: Context) {
         }
         if (q.isBlank()) return ordered.take(MAX_LOCAL_RESULTS)
         return ordered
-            .filter { it.label.contains(q, ignoreCase = true) }
+            .filter { it.label.contains(q, ignoreCase = true) || it.quickLabel?.contains(q, ignoreCase = true) == true }
             .take(MAX_LOCAL_RESULTS)
+    }
+
+    private fun writeQuick(key: String, label: String) {
+        val clean = label.trim()
+        if (clean.isBlank()) return
+        prefs.edit().putString(key, clean).apply()
+        addRecent(clean)
     }
 
     private fun readList(key: String): List<String> {
@@ -79,12 +116,15 @@ class DestinationStore(context: Context) {
         val label: String,
         val saved: Boolean,
         val recent: Boolean,
+        val quickLabel: String? = null,
     )
 
     private companion object {
         const val PREFS_NAME = "lane_gps_destinations"
         const val KEY_RECENT = "recent"
         const val KEY_SAVED = "saved"
+        const val KEY_HOME = "home"
+        const val KEY_WORK = "work"
         const val MAX_RECENTS = 10
         const val MAX_SAVED = 12
         const val MAX_LOCAL_RESULTS = 8
