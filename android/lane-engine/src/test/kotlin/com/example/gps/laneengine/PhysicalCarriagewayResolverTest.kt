@@ -20,13 +20,13 @@ class PhysicalCarriagewayResolverTest {
             lane("B2", "B", 2, 7.2),
         )
 
-        listOf(0.0, 12.0, 24.0, 36.0, 48.0).forEach { northMeters ->
+        listOf(0.0, 12.0, 24.0, 36.0, 48.0, 60.0).forEach { northMeters ->
             val result = resolver.resolve(positionNorthMeters(northMeters), 0.0, lanes[3], lanes)
             assertEquals(3, result.laneCount)
             assertFalse(result.mergedSegments)
         }
 
-        val confirmed = resolver.resolve(positionNorthMeters(60.0), 0.0, lanes[3], lanes)
+        val confirmed = resolver.resolve(positionNorthMeters(72.0), 0.0, lanes[3], lanes)
         assertEquals(5, confirmed.laneCount)
         assertEquals(4, confirmed.laneNumberFromLeft)
         assertTrue(confirmed.mergedSegments)
