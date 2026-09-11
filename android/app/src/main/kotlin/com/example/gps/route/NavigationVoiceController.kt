@@ -171,7 +171,8 @@ class NavigationVoiceController(
 
     private fun speak(text: String, utteranceId: String) {
         if (!ready || state().muted) return
-        tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+        val result = tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+        NavigationVoiceTelemetryRuntime.publishSpeakAttempt(text, result)
     }
 
     private fun refreshVoices() {
@@ -207,7 +208,18 @@ class NavigationVoiceController(
         tts.voices.orEmpty().firstOrNull { it.name == id }
 
     private fun publishState() {
-        onStateChanged(state())
+        val current = state()
+        val label = current.voices
+            .firstOrNull { it.id == current.selectedVoiceId }
+            ?.label
+            ?: if (current.selectedVoiceId == DEFAULT_VOICE_ID) "System default" else ""
+        NavigationVoiceTelemetryRuntime.publishState(
+            ready = current.ready,
+            muted = current.muted,
+            selectedVoiceId = current.selectedVoiceId,
+            selectedVoiceLabel = label,
+        )
+        onStateChanged(current)
     }
 
     companion object {
