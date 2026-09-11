@@ -20,20 +20,13 @@ class PhysicalCarriagewayResolverTest {
             lane("B2", "B", 2, 7.2),
         )
 
-        val first = resolver.resolve(
-            position = positionNorthMeters(0.0),
-            travelHeadingDegrees = 0.0,
-            matchedLane = lanes[3],
-            lanes = lanes,
-        )
-        val second = resolver.resolve(positionNorthMeters(12.0), 0.0, lanes[3], lanes)
-        val third = resolver.resolve(positionNorthMeters(24.0), 0.0, lanes[3], lanes)
-        val confirmed = resolver.resolve(positionNorthMeters(36.0), 0.0, lanes[3], lanes)
+        listOf(0.0, 12.0, 24.0, 36.0, 48.0).forEach { northMeters ->
+            val result = resolver.resolve(positionNorthMeters(northMeters), 0.0, lanes[3], lanes)
+            assertEquals(3, result.laneCount)
+            assertFalse(result.mergedSegments)
+        }
 
-        assertEquals(3, first.laneCount)
-        assertFalse(first.mergedSegments)
-        assertEquals(3, second.laneCount)
-        assertEquals(3, third.laneCount)
+        val confirmed = resolver.resolve(positionNorthMeters(60.0), 0.0, lanes[3], lanes)
         assertEquals(5, confirmed.laneCount)
         assertEquals(4, confirmed.laneNumberFromLeft)
         assertTrue(confirmed.mergedSegments)
@@ -41,7 +34,7 @@ class PhysicalCarriagewayResolverTest {
     }
 
     @Test
-    fun shortJunctionLikeTwoPlusThreeAlignmentNeverBecomesFive() {
+    fun junctionLikeTwoPlusThreeAlignmentUnderSixtyMetersNeverBecomesFive() {
         val resolver = PhysicalCarriagewayResolver()
         val lanes = listOf(
             lane("A0", "A", 0, -7.2),
@@ -51,7 +44,7 @@ class PhysicalCarriagewayResolverTest {
             lane("B2", "B", 2, 7.2),
         )
 
-        listOf(0.0, 5.0, 10.0, 15.0, 20.0).forEach { northMeters ->
+        listOf(0.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0).forEach { northMeters ->
             val result = resolver.resolve(positionNorthMeters(northMeters), 0.0, lanes[3], lanes)
             assertEquals(3, result.laneCount)
             assertFalse(result.mergedSegments)
@@ -71,7 +64,7 @@ class PhysicalCarriagewayResolverTest {
             lane("C1", "C", 1, 10.8),
         )
 
-        listOf(0.0, 12.0, 24.0, 36.0, 48.0, 60.0).forEach { northMeters ->
+        listOf(0.0, 12.0, 24.0, 36.0, 48.0, 60.0, 72.0).forEach { northMeters ->
             val result = resolver.resolve(positionNorthMeters(northMeters), 0.0, lanes[3], lanes)
             assertEquals(3, result.laneCount)
             assertFalse(result.mergedSegments)
