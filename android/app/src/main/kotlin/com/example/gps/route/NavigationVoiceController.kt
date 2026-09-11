@@ -52,7 +52,7 @@ class NavigationVoiceController(
         ready = ready,
         muted = prefs.getBoolean(KEY_MUTED, false),
         voices = voiceOptions,
-        selectedVoiceId = prefs.getString(KEY_VOICE_ID, null),
+        selectedVoiceId = prefs.getString(KEY_VOICE_ID, DEFAULT_VOICE_ID),
     )
 
     fun setMuted(muted: Boolean) {
@@ -62,13 +62,14 @@ class NavigationVoiceController(
     }
 
     fun selectVoice(id: String?) {
-        if (id.isNullOrBlank()) {
-            prefs.edit().remove(KEY_VOICE_ID).apply()
-            if (ready) tts.language = Locale.US
-        } else {
-            prefs.edit().putString(KEY_VOICE_ID, id).apply()
-            if (ready) {
-                findVoice(id)?.let { tts.voice = it }
+        val selected = id?.takeIf { it.isNotBlank() } ?: DEFAULT_VOICE_ID
+        prefs.edit().putString(KEY_VOICE_ID, selected).apply()
+        if (ready) {
+            if (selected == DEFAULT_VOICE_ID) {
+                tts.language = Locale.US
+                tts.defaultVoice?.let { tts.voice = it }
+            } else {
+                findVoice(selected)?.let { tts.voice = it }
             }
         }
         publishState()
@@ -135,10 +136,6 @@ class NavigationVoiceController(
         }
     }
 
-    /**
-     * Buckets only get smaller while approaching a maneuver. A new maneuver key
-     * resets the threshold state, so we do not repeat every GPS update.
-     */
     private fun distanceBucket(meters: Double): Int? = when {
         !meters.isFinite() -> null
         meters <= 55.0 -> 0
@@ -191,8 +188,11 @@ class NavigationVoiceController(
     }
 
     private fun applySavedVoice() {
-        val id = prefs.getString(KEY_VOICE_ID, null) ?: return
-        if (id == DEFAULT_VOICE_ID) return
+        val id = prefs.getString(KEY_VOICE_ID, DEFAULT_VOICE_ID) ?: DEFAULT_VOICE_ID
+        if (id == DEFAULT_VOICE_ID) {
+            tts.defaultVoice?.let { tts.voice = it }
+            return
+        }
         findVoice(id)?.let { tts.voice = it }
     }
 
