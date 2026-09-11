@@ -65,8 +65,6 @@ class PhysicalCarriagewayResolver {
         }
         if (samples.none { it.lane.id == matchedLane.id }) return fallback
 
-        // Consecutive OSM ways often overlap briefly at a node. Cluster lanes that
-        // occupy the same lateral position so a 3-lane road does not become 6.
         val clusters = mutableListOf<MutableList<Sample>>()
         samples.sortedByDescending { it.lateralMeters }.forEach { sample ->
             val existing = clusters.lastOrNull()
@@ -85,8 +83,6 @@ class PhysicalCarriagewayResolver {
 
         fun center(index: Int): Double = clusters[index].map { it.lateralMeters }.average()
 
-        // Only keep the contiguous lane band around the matched lane. This stops a
-        // clearly separated parallel road from being merged just because it is nearby.
         var first = matchedClusterIndex
         while (first > 0) {
             val gap = center(first - 1) - center(first)
@@ -110,10 +106,6 @@ class PhysicalCarriagewayResolver {
             .map { it.lane.segmentId }
             .toSet()
 
-        // Field logs showed a 3-way geometry bundle being interpreted as seven
-        // physical lanes. That is exactly the junction/collector case this layer
-        // must reject. The supported reconstruction case is two OSM ways that
-        // together represent one visible carriageway (for example 2 + 3 lanes).
         if (segmentIds.size > MAX_MERGED_SEGMENTS) {
             resetMergeEvidence()
             return fallback
@@ -126,8 +118,6 @@ class PhysicalCarriagewayResolver {
             segmentCount = segmentIds.size.coerceAtLeast(1),
         )
 
-        // A cross-way merge that does not add any lanes has no display benefit and
-        // should not affect confidence/exact-lane behavior.
         if (!candidate.mergedSegments || candidate.laneCount <= fallback.laneCount) {
             resetMergeEvidence()
             return fallback
@@ -307,11 +297,11 @@ class PhysicalCarriagewayResolver {
         const val MAX_LANES = 8
         const val MAX_MERGED_SEGMENTS = 2
 
-        // Cross-way lane counts must survive actual travel, not just a momentary
-        // junction geometry alignment. The false five-lane merge seen in field
-        // testing lasted under ~20 m, so 30 m deliberately rejects that case.
-        const val MIN_CONFIRM_TRAVEL_M = 30.0
-        const val MIN_CONFIRM_POSITIONS = 3
+        // The latest field log produced a one-fix five-lane flash after a candidate
+        // survived the old 30 m threshold near a maneuver. Require a substantially
+        // longer stable corridor before changing the visible physical lane count.
+        const val MIN_CONFIRM_TRAVEL_M = 60.0
+        const val MIN_CONFIRM_POSITIONS = 5
         const val MIN_DISTINCT_FIX_MOVE_M = 3.0
         const val MAX_EVIDENCE_STEP_M = 80.0
         const val EVIDENCE_TIMEOUT_NANOS = 5_000_000_000L
