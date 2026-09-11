@@ -31,7 +31,9 @@ import com.example.gps.location.DriveSessionRuntime
 import com.example.gps.location.DriveSessionStore
 import com.example.gps.location.DriveTrackingService
 import com.example.gps.location.GnssUiState
+import com.example.gps.route.DestinationStore
 import com.example.gps.route.OpenRouteClient
+import com.example.gps.route.PhotonSearchClient
 import org.json.JSONArray
 import org.json.JSONObject
 import org.maplibre.android.MapLibre
@@ -868,6 +870,40 @@ private fun DestinationCard(
     onFindRoute: () -> Unit,
     onClearRoute: () -> Unit,
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val store = remember { DestinationStore(context.applicationContext) }
+    val photon = remember { PhotonSearchClient() }
+    var saved by remember { mutableStateOf(store.saved()) }
+    var recent by remember { mutableStateOf(store.recent()) }
+    var remoteSuggestions by remember { mutableStateOf<List<PhotonSearchClient.Suggestion>>(emptyList()) }
+    var searching by remember { mutableStateOf(false) }
+
+    LaunchedEffect(routeUi.summary?.destinationName) {
+        val destination = routeUi.summary?.destinationName?.trim().orEmpty()
+        if (destination.isNotBlank()) {
+            store.addRecent(destination)
+            recent = store.recent()
+        }
+    }
+
+    LaunchedEffect(query) {
+        remoteSuggestions = emptyList()
+        searching = false
+        val clean = query.trim()
+        if (clean.length < 3) return@LaunchedEffect
+        kotlinx.coroutines.delay(450L)
+        searching = true
+        remoteSuggestions = runCatching {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                photon.search(clean, limit = 5)
+            }
+        }.getOrDefault(emptyList())
+        searching = false
+    }
+
+    val localMatches = remember(query, saved, recent) { store.localMatches(query) }
+    val showSuggestions = localMatches.isNotEmpty() || remoteSuggestions.isNotEmpty() || searching
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = NavCard),
@@ -884,6 +920,123 @@ private fun DestinationCard(
                 placeholder = { Text("Address, place or business") },
                 enabled = !routeUi.planning,
             )
+
+            if (showSuggestions && !routeUi.planning) {
+                Spacer(Modifier.height(6.dp))
+                Surface(
+                    color = Color(0xFF0D1422),
+                    shape = RoundedCornerShape(12.dp),
+                    tonalElevation = 2.dp,
+                ) {
+                    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                        if (query.isBlank() && localMatches.isNotEmpty()) {
+                            Text(
+                                "SAVED & RECENT",
+                                color = NavMuted,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                            )
+                        }
+
+                        localMatches.take(5).forEach { item ->
+                            Row(
+                                Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                TextButton(
+                                    onClick = { onQueryChange(item.label) },
+                                    modifier = Modifier.weight(1f),
+                                ) {
+                                    Column(Modifier.fillMaxWidth()) {
+                                        Text(
+                                            item.label,
+                                            color = Color.White,
+                                            fontSize = 12.sp,
+                                            maxLines = 2,
+                                            textAlign = TextAlign.Start,
+                                            modifier = Modifier.fillMaxWidth(),
+                                        )
+                                        Text(
+                                            when {
+                                                item.saved -> "Saved"
+                                                item.recent -> "Recent"
+                                                else -> ""
+                                            },
+                                            color = if (item.saved) NavBlueSoft else NavMuted,
+                                            fontSize = 9.sp,
+                                            modifier = Modifier.fillMaxWidth(),
+                                        )
+                                    }
+                                }
+                                TextButton(onClick = {
+                                    store.toggleSaved(item.label)
+                                    saved = store.saved()
+                                }) {
+                                    Text(if (store.isSaved(item.label)) "★" else "☆", color = NavBlueSoft)
+                                }
+                            }
+                        }
+
+                        remoteSuggestions
+                            .filterNot { remote ->
+                                localMatches.any { local ->
+                                    remote.label.equals(local.label, ignoreCase = true)
+                                }
+                            }
+                            .take(5)
+                            .forEach { suggestion ->
+                                val fullLabel = listOf(suggestion.label, suggestion.subtitle)
+                                    .filter { it.isNotBlank() }
+                                    .joinToString(", ")
+                                Row(
+                                    Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    TextButton(
+                                        onClick = { onQueryChange(fullLabel) },
+                                        modifier = Modifier.weight(1f),
+                                    ) {
+                                        Column(Modifier.fillMaxWidth()) {
+                                            Text(
+                                                suggestion.label,
+                                                color = Color.White,
+                                                fontSize = 12.sp,
+                                                maxLines = 1,
+                                                modifier = Modifier.fillMaxWidth(),
+                                            )
+                                            if (suggestion.subtitle.isNotBlank()) {
+                                                Text(
+                                                    suggestion.subtitle,
+                                                    color = NavMuted,
+                                                    fontSize = 9.sp,
+                                                    maxLines = 1,
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                )
+                                            }
+                                        }
+                                    }
+                                    TextButton(onClick = {
+                                        store.toggleSaved(fullLabel)
+                                        saved = store.saved()
+                                    }) {
+                                        Text(if (store.isSaved(fullLabel)) "★" else "☆", color = NavBlueSoft)
+                                    }
+                                }
+                            }
+
+                        if (searching) {
+                            Text(
+                                "Searching addresses…",
+                                color = NavMuted,
+                                fontSize = 10.sp,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                            )
+                        }
+                    }
+                }
+            }
+
             Spacer(Modifier.height(7.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
@@ -903,7 +1056,26 @@ private fun DestinationCard(
             }
             routeUi.summary?.let { route ->
                 Spacer(Modifier.height(7.dp))
-                Text(route.destinationName, color = NavBlueSoft, fontSize = 11.sp, maxLines = 2)
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        route.destinationName,
+                        color = NavBlueSoft,
+                        fontSize = 11.sp,
+                        maxLines = 2,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = {
+                        store.toggleSaved(route.destinationName)
+                        saved = store.saved()
+                    }) {
+                        Text(
+                            if (store.isSaved(route.destinationName)) "★ SAVED" else "☆ SAVE",
+                            color = NavBlueSoft,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                }
             }
         }
     }
