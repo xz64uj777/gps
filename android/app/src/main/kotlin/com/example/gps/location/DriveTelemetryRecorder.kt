@@ -200,6 +200,14 @@ class DriveTelemetryRecorder(context: Context) {
             voice.lastSpeakResult?.toString() ?: "",
             voice.lastAttemptAtMillis.takeIf { it > 0L }?.toString() ?: "",
             voice.updatedAtMillis.takeIf { it > 0L }?.toString() ?: "",
+            csv(state.motionEvent.orEmpty()),
+            state.motionEventSequence.toString(),
+            csv(state.laneChangeEvent.orEmpty()),
+            state.laneChangeEventSequence.toString(),
+            state.sessionLeftLateralEvents.toString(),
+            state.sessionRightLateralEvents.toString(),
+            state.sessionTurnEvents.toString(),
+            state.sessionRejectedMotionSpikes.toString(),
         ).joinToString(",")
     }
 
@@ -230,6 +238,8 @@ class DriveTelemetryRecorder(context: Context) {
                 "nav_remaining_distance_m,nav_remaining_seconds,nav_off_route_m,nav_route_point_index," +
                 "nav_maneuver_index,nav_arrived,nav_reroute_count,nav_updated_at_ms," +
                 "voice_ready,voice_muted,voice_selected_id,voice_selected_label,voice_speak_attempts," +
-                "voice_last_utterance,voice_last_result,voice_last_attempt_ms,voice_updated_at_ms"
+                "voice_last_utterance,voice_last_result,voice_last_attempt_ms,voice_updated_at_ms," +
+                "motion_event,motion_event_sequence,lane_change_event,lane_change_event_sequence," +
+                "session_left_lateral_events,session_right_lateral_events,session_turn_events,session_rejected_motion_spikes"
     }
 }
