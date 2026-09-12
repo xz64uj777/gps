@@ -36,6 +36,10 @@ data class GnssUiState(
     val lateralAccelerationMps2: Float? = null,
     val yawRateDegS: Float? = null,
     val motionHint: String = "WAITING",
+    val motionEvent: String? = null,
+    val motionEventSequence: Long = 0L,
+    val laneChangeEvent: String? = null,
+    val laneChangeEventSequence: Long = 0L,
     val sensorFrameCalibrated: Boolean = false,
     val rotationSensorAvailable: Boolean = false,
     val linearAccelerationAvailable: Boolean = false,
@@ -97,8 +101,8 @@ class AndroidGnssTracker(
             motion.maneuverEvent != null
         ) {
             when (motion.maneuverEvent) {
-                "LEFT LATERAL" -> leftEvents++
-                "RIGHT LATERAL" -> rightEvents++
+                "LEFT LATERAL", "LEFT LANE CHANGE" -> leftEvents++
+                "RIGHT LATERAL", "RIGHT LANE CHANGE" -> rightEvents++
                 "TURN / CURVE" -> turnEvents++
             }
             lastManeuverEventSequence = motion.maneuverEventSequence
@@ -110,6 +114,10 @@ class AndroidGnssTracker(
             lateralAccelerationMps2 = motion.lateralAccelerationMps2,
             yawRateDegS = motion.yawRateDegS,
             motionHint = motion.motionHint,
+            motionEvent = motion.maneuverEvent,
+            motionEventSequence = motion.maneuverEventSequence,
+            laneChangeEvent = motion.laneChangeEvent,
+            laneChangeEventSequence = motion.laneChangeEventSequence,
             sensorFrameCalibrated = motion.sensorFrameCalibrated,
             rotationSensorAvailable = motion.rotationSensorAvailable,
             linearAccelerationAvailable = motion.linearAccelerationAvailable,
