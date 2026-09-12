@@ -24,6 +24,8 @@ data class MotionFusionState(
     val gyroscopeAvailable: Boolean = false,
     val maneuverEvent: String? = null,
     val maneuverEventSequence: Long = 0L,
+    val laneChangeEvent: String? = null,
+    val laneChangeEventSequence: Long = 0L,
     val rejectedSpikeCount: Int = 0,
 )
 
@@ -68,6 +70,7 @@ class MotionSensorFusion(
     private var laneChangeStartedElapsed = 0L
     private var laneChangeFirstPhaseSinceElapsed = 0L
     private var laneChangeStartHeading: Float? = null
+    private var laneChangeCooldownUntilElapsed = 0L
 
     private var lastAcceptedRawLateral: Float? = null
     private var lastAcceptedRawYaw: Float? = null
@@ -253,34 +256,40 @@ class MotionSensorFusion(
             resetLaneChangeCandidate()
             return false
         }
+        if (now < laneChangeCooldownUntilElapsed) return false
 
         val lat = state.lateralAccelerationMps2 ?: return false
         val yaw = abs(state.yawRateDegS ?: 0f)
         val heading = state.fusedHeadingDegrees
 
-        if (laneChangePhase != 0 && now - laneChangeStartedElapsed > 3500L) {
-            resetLaneChangeCandidate()
-        }
-        if (laneChangePhase != 0 && laneChangeStartHeading != null && heading != null &&
-            angleDifferenceDegrees(laneChangeStartHeading!!, heading) > 18f
-        ) {
-            resetLaneChangeCandidate()
+        if (laneChangePhase != 0 && now - laneChangeStartedElapsed > LANE_CHANGE_MAX_DURATION_MS) {
+            abandonLaneChangeCandidate(now)
             return false
         }
-        if (yaw > 35f) {
-            resetLaneChangeCandidate()
+        if (
+            laneChangePhase != 0 &&
+            laneChangeStartHeading != null &&
+            heading != null &&
+            angleDifferenceDegrees(laneChangeStartHeading!!, heading) > LANE_CHANGE_MAX_HEADING_SWING_DEG
+        ) {
+            abandonLaneChangeCandidate(now)
+            return false
+        }
+        if (yaw > LANE_CHANGE_MAX_YAW_DEG_S) {
+            if (laneChangePhase != 0) abandonLaneChangeCandidate(now)
+            else resetLaneChangeCandidate()
             return false
         }
 
         when (laneChangePhase) {
             0 -> {
-                if (abs(lat) >= 0.32f && yaw <= 20f) {
+                if (abs(lat) >= LANE_CHANGE_ENTRY_LATERAL_MPS2 && yaw <= LANE_CHANGE_ENTRY_MAX_YAW_DEG_S) {
                     if (laneChangeFirstPhaseSinceElapsed == 0L || sign(lat) != laneChangeSign) {
                         laneChangeSign = sign(lat)
                         laneChangeFirstPhaseSinceElapsed = now
                         laneChangeStartHeading = heading
                     }
-                    if (now - laneChangeFirstPhaseSinceElapsed >= 220L) {
+                    if (now - laneChangeFirstPhaseSinceElapsed >= LANE_CHANGE_ENTRY_HOLD_MS) {
                         laneChangePhase = 1
                         laneChangeStartedElapsed = now
                         state = state.copy(motionHint = "LANE CHANGE VERIFYING")
@@ -294,18 +303,21 @@ class MotionSensorFusion(
 
             1 -> {
                 state = state.copy(motionHint = "LANE CHANGE VERIFYING")
-                if (lat * laneChangeSign <= -0.22f && yaw <= 22f) {
+                if (lat * laneChangeSign <= -LANE_CHANGE_RETURN_LATERAL_MPS2 && yaw <= LANE_CHANGE_RETURN_MAX_YAW_DEG_S) {
                     val returnedHeading = laneChangeStartHeading == null || heading == null ||
-                        angleDifferenceDegrees(laneChangeStartHeading!!, heading) <= 12f
+                        angleDifferenceDegrees(laneChangeStartHeading!!, heading) <= LANE_CHANGE_RETURN_HEADING_DEG
                     if (returnedHeading && now - lastConfirmedEventElapsed >= 1800L) {
-                        val event = if (laneChangeSign > 0f) "RIGHT LATERAL" else "LEFT LATERAL"
+                        val event = if (laneChangeSign > 0f) "RIGHT LANE CHANGE" else "LEFT LANE CHANGE"
                         lastConfirmedEventElapsed = now
                         state = state.copy(
                             maneuverEvent = event,
                             maneuverEventSequence = state.maneuverEventSequence + 1L,
+                            laneChangeEvent = event,
+                            laneChangeEventSequence = state.laneChangeEventSequence + 1L,
                             motionHint = event,
                         )
                         resetLaneChangeCandidate()
+                        laneChangeCooldownUntilElapsed = now + LANE_CHANGE_SUCCESS_COOLDOWN_MS
                         return true
                     }
                 }
@@ -313,6 +325,11 @@ class MotionSensorFusion(
             }
         }
         return false
+    }
+
+    private fun abandonLaneChangeCandidate(now: Long) {
+        resetLaneChangeCandidate()
+        laneChangeCooldownUntilElapsed = now + LANE_CHANGE_FAILURE_COOLDOWN_MS
     }
 
     private fun resetLaneChangeCandidate() {
@@ -384,5 +401,16 @@ class MotionSensorFusion(
 
     private companion object {
         const val GNSS_BEARING_HOLD_MS = 8_000L
+        const val LANE_CHANGE_ENTRY_LATERAL_MPS2 = 0.40f
+        const val LANE_CHANGE_RETURN_LATERAL_MPS2 = 0.24f
+        const val LANE_CHANGE_ENTRY_MAX_YAW_DEG_S = 14f
+        const val LANE_CHANGE_RETURN_MAX_YAW_DEG_S = 16f
+        const val LANE_CHANGE_MAX_YAW_DEG_S = 28f
+        const val LANE_CHANGE_MAX_HEADING_SWING_DEG = 15f
+        const val LANE_CHANGE_RETURN_HEADING_DEG = 10f
+        const val LANE_CHANGE_ENTRY_HOLD_MS = 300L
+        const val LANE_CHANGE_MAX_DURATION_MS = 2_500L
+        const val LANE_CHANGE_FAILURE_COOLDOWN_MS = 1_200L
+        const val LANE_CHANGE_SUCCESS_COOLDOWN_MS = 1_800L
     }
 }
