@@ -1,5 +1,6 @@
 package com.example.gps
 
+import com.example.gps.laneengine.FixFreshness
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -360,7 +361,7 @@ class NavigationActivity : ComponentActivity() {
     private fun freshLocation(state: GnssUiState): Boolean {
         val timestamp = state.lastUpdateMillis ?: return false
         if (!state.fixReceived || state.latitude == null || state.longitude == null) return false
-        return System.currentTimeMillis() - timestamp <= 10_000L
+        return FixFreshness.isFresh(timestamp, System.currentTimeMillis())
     }
 
     private fun startDrive() {
@@ -481,7 +482,7 @@ class NavigationActivity : ComponentActivity() {
         val lat = state.latitude
         val lon = state.longitude
         val positionSource = style.getSource(POSITION_SOURCE_ID) as? GeoJsonSource
-        if (lat != null && lon != null && state.fixReceived) {
+        if (lat != null && lon != null && freshLocation(state)) {
             positionSource?.setGeoJson(pointFeatureCollection(lat, lon))
         } else {
             positionSource?.setGeoJson(emptyFeatureCollection())
@@ -489,7 +490,7 @@ class NavigationActivity : ComponentActivity() {
 
         val fixTimestamp = state.lastUpdateMillis
         val shouldMoveCamera = forceCamera || (fixTimestamp != null && fixTimestamp != lastMapFixTimestamp)
-        if (lat != null && lon != null && shouldMoveCamera) {
+        if (lat != null && lon != null && shouldMoveCamera && freshLocation(state)) {
             lastMapFixTimestamp = fixTimestamp
             val heading = (state.fusedHeadingDegrees ?: state.bearingDegrees ?: 0f).toDouble()
             val moving = (state.speedMps ?: 0f) >= 1.5f

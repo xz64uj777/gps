@@ -12,6 +12,7 @@ import android.os.PowerManager
 import android.os.SystemClock
 import com.example.gps.MainActivity
 import com.example.gps.lane.DirectOsmLaneClient
+import com.example.gps.laneengine.FixFreshness
 import com.example.gps.laneengine.GeoPoint
 import com.example.gps.laneengine.Lane
 import com.example.gps.laneengine.LaneMatcher
@@ -145,7 +146,8 @@ class DriveTrackingService : Service() {
     private fun maybeFetchLaneCorridor(state: GnssUiState) {
         val lat = state.latitude ?: return
         val lon = state.longitude ?: return
-        if (!state.fixReceived || laneFetchInFlight) return
+        if (!state.fixReceived || laneFetchInFlight ||
+            !FixFreshness.isFresh(state.lastUpdateMillis, System.currentTimeMillis())) return
 
         val current = GeoPoint(lat, lon)
         val now = SystemClock.elapsedRealtime()
@@ -164,7 +166,7 @@ class DriveTrackingService : Service() {
         lastLaneFetchAttemptElapsed = now
         laneFetchInFlight = true
         laneFetchStatus = "LOADING"
-        laneOverlay = laneOverlay.copy(status = "LOADING OSM LANES DIRECTLY…")
+        if (!hasCache) laneOverlay = LaneOverlay(status = "LOADING OSM LANES DIRECTLY…")
 
         laneExecutor.execute {
             try {
@@ -221,6 +223,9 @@ class DriveTrackingService : Service() {
     }
 
     private fun applyLaneMatch(state: GnssUiState): GnssUiState {
+        if (!FixFreshness.isFresh(state.lastUpdateMillis, System.currentTimeMillis())) {
+            return mergeLaneOverlay(state)
+        }
         val allLanes = cachedLanes
         val lat = state.latitude
         val lon = state.longitude
@@ -338,6 +343,17 @@ class DriveTrackingService : Service() {
     }
 
     private fun mergeLaneOverlay(state: GnssUiState): GnssUiState {
+        if (!FixFreshness.isFresh(state.lastUpdateMillis, System.currentTimeMillis())) {
+            return state.copy(
+                laneDataStatus = "GPS POSITION UNAVAILABLE · WAITING FOR FRESH FIX",
+                laneCandidateCount = 0,
+                likelyLaneNumberFromLeft = null,
+                likelyLaneCount = null,
+                laneConfidence = 0f,
+                laneExactClaim = false,
+                sensorLaneReady = false,
+            )
+        }
         val overlay = laneOverlay
         return state.copy(
             laneDataStatus = overlay.status,
