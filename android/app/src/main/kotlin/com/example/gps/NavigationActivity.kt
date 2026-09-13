@@ -1,6 +1,6 @@
 package com.example.gps
 
-import com.example.gps.laneengine.FixFreshness
+import com.example.gps.laneengine.NavigationFixQuality
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -256,7 +256,7 @@ class NavigationActivity : ComponentActivity() {
             pendingRouteQuery = query
             routeUi = routeUi.copy(
                 waitingForGps = true,
-                error = "Waiting for a fresh GPS fix. Navigation will start automatically.",
+                error = "Waiting for an accurate GPS fix. Navigation will start automatically.",
             )
         }
     }
@@ -268,7 +268,10 @@ class NavigationActivity : ComponentActivity() {
             val result = runCatching { routeClient.plan(query, lat, lon) }
             runOnUiThread {
                 routeUi = result.fold(
-                    onSuccess = { summary ->
+                    onSuccess = { planned ->
+                        val summary = if (freshLocation(uiState)) {
+                            routeClient.updateProgress(planned, uiState.latitude!!, uiState.longitude!!)
+                        } else planned
                         NavigationRuntimeCache.route = summary
                         offRouteFixStreak = 0
                         NavigationRouteUi(summary = summary)
@@ -324,7 +327,10 @@ class NavigationActivity : ComponentActivity() {
             val result = runCatching { routeClient.reroute(previous, lat, lon) }
             runOnUiThread {
                 routeUi = result.fold(
-                    onSuccess = { summary ->
+                    onSuccess = { planned ->
+                        val summary = if (freshLocation(uiState)) {
+                            routeClient.updateProgress(planned, uiState.latitude!!, uiState.longitude!!)
+                        } else planned
                         NavigationRuntimeCache.route = summary
                         routeUi.copy(rerouting = false, summary = summary, error = null)
                     },
@@ -361,7 +367,7 @@ class NavigationActivity : ComponentActivity() {
     private fun freshLocation(state: GnssUiState): Boolean {
         val timestamp = state.lastUpdateMillis ?: return false
         if (!state.fixReceived || state.latitude == null || state.longitude == null) return false
-        return FixFreshness.isFresh(timestamp, System.currentTimeMillis())
+        return NavigationFixQuality.isUsable(timestamp, System.currentTimeMillis(), state.accuracyMeters?.toDouble())
     }
 
     private fun startDrive() {
@@ -513,7 +519,9 @@ class NavigationActivity : ComponentActivity() {
                     }
                 )
                 .build()
-            map?.easeCamera(CameraUpdateFactory.newCameraPosition(camera), 450)
+            // The marker and follow camera must use the same fix in the same frame.
+            // An eased camera trails the immediately updated marker at highway speed.
+            map?.moveCamera(CameraUpdateFactory.newCameraPosition(camera))
         }
     }
 
