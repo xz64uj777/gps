@@ -1,5 +1,6 @@
 package com.example.gps.route
 
+import com.example.gps.laneengine.ManeuverInstruction
 import com.example.gps.laneengine.GeoPoint
 import com.example.gps.laneengine.RerouteStartupGuard
 import com.example.gps.laneengine.RouteProgressTracker
@@ -268,7 +269,7 @@ class OpenRouteClient {
                 val label = if (type == "arrive") {
                     "Arrive at destination"
                 } else {
-                    maneuverText(type, maneuver.optString("modifier", ""))
+                    ManeuverInstruction.text(type, maneuver.optString("modifier", ""), step.optString("exits", ""))
                 }
                 maneuvers += RouteManeuver(
                     label = label,
@@ -370,32 +371,6 @@ class OpenRouteClient {
         val h = sin(dp / 2) * sin(dp / 2) +
             cos(p1) * cos(p2) * sin(dl / 2) * sin(dl / 2)
         return 2.0 * EARTH_RADIUS_M * atan2(sqrt(h), sqrt(1.0 - h))
-    }
-
-    private fun maneuverText(type: String, modifier: String): String {
-        val direction = when (modifier) {
-            "slight left" -> "Slight left"
-            "left" -> "Turn left"
-            "sharp left" -> "Sharp left"
-            "slight right" -> "Slight right"
-            "right" -> "Turn right"
-            "sharp right" -> "Sharp right"
-            "straight" -> "Continue straight"
-            "uturn" -> "Make a U-turn"
-            else -> ""
-        }
-        if (direction.isNotBlank()) return direction
-        return when (type) {
-            "merge" -> "Merge"
-            "on ramp" -> "Take the ramp"
-            "off ramp" -> "Take the exit"
-            "fork" -> "Keep at the fork"
-            "roundabout", "rotary" -> "Enter the roundabout"
-            "new name" -> "Continue"
-            "end of road" -> "At the end of the road"
-            "arrive" -> "Arrive at destination"
-            else -> type.replace('_', ' ').replaceFirstChar { it.uppercase() }
-        }
     }
 
     private fun get(url: URL): String {
