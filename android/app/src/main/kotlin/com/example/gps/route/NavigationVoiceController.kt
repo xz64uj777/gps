@@ -182,7 +182,7 @@ class NavigationVoiceController(
 
         voiceOptions = buildList {
             add(VoiceOption(DEFAULT_VOICE_ID, "System default"))
-            english.take(MAX_VOICES).forEachIndexed { index, voice ->
+            english.forEachIndexed { index, voice ->
                 val region = voice.locale.displayCountry.takeIf { it.isNotBlank() }
                 val local = if (voice.isNetworkConnectionRequired) "online" else "device"
                 val label = buildString {
@@ -227,6 +227,5 @@ class NavigationVoiceController(
         private const val PREFS_NAME = "lane_gps_voice"
         private const val KEY_MUTED = "muted"
         private const val KEY_VOICE_ID = "voice_id"
-        private const val MAX_VOICES = 8
     }
 }
