@@ -15,11 +15,13 @@ class DriveTelemetryRecorder(context: Context) {
     private val appContext = context.applicationContext
     private val logDir = File(appContext.filesDir, "drive-logs")
     private val logFile = File(logDir, "lane-gps-last-drive.csv")
+    private var lastRecordedLaneChangeSequence = 0L
 
     fun startNew() {
         logDir.mkdirs()
         NavigationTelemetryRuntime.resetForDrive()
         NavigationVoiceTelemetryRuntime.resetForDrive()
+        lastRecordedLaneChangeSequence = 0L
         logFile.writeText(HEADER + "\n")
     }
 
@@ -149,6 +151,22 @@ class DriveTelemetryRecorder(context: Context) {
         val nav = NavigationTelemetryRuntime.snapshot()
         val voice = NavigationVoiceTelemetryRuntime.snapshot()
 
+        val newLaneChangeEvent =
+            state.laneChangeEventSequence > lastRecordedLaneChangeSequence &&
+                !state.laneChangeEvent.isNullOrBlank()
+        val laneChangeRejection = when {
+            !newLaneChangeEvent -> ""
+            fixStale -> "STALE_FIX"
+            (state.speedMps ?: 0f) < LANE_CHANGE_MIN_SPEED_MPS -> "LOW_SPEED"
+            state.laneCandidateCount <= 0 -> "NO_LANE_MAP"
+            (state.likelyLaneCount ?: 0) < 2 -> "ROAD_NOT_MULTI_LANE"
+            else -> "ELIGIBLE"
+        }
+        val laneChangeMapEligible = newLaneChangeEvent && laneChangeRejection == "ELIGIBLE"
+        if (newLaneChangeEvent) {
+            lastRecordedLaneChangeSequence = state.laneChangeEventSequence
+        }
+
         return listOf(
             (fixTimestampMillis ?: recordedAtMillis).toString(),
             number(state.latitude),
@@ -208,6 +226,9 @@ class DriveTelemetryRecorder(context: Context) {
             state.sessionRightLateralEvents.toString(),
             state.sessionTurnEvents.toString(),
             state.sessionRejectedMotionSpikes.toString(),
+            newLaneChangeEvent.toString(),
+            laneChangeMapEligible.toString(),
+            csv(laneChangeRejection),
         ).joinToString(",")
     }
 
@@ -221,6 +242,7 @@ class DriveTelemetryRecorder(context: Context) {
         private const val STALE_FIX_MS = 3000L
         private const val USEFUL_ACCURACY_M = 50.0
         private const val MOVING_SPEED_MPS = 1.0
+        private const val LANE_CHANGE_MIN_SPEED_MPS = 6.0f
         private const val EXPORT_TAIL_GRACE_MS = 90_000L
 
         private const val ACCURACY_INDEX = 3
@@ -240,6 +262,7 @@ class DriveTelemetryRecorder(context: Context) {
                 "voice_ready,voice_muted,voice_selected_id,voice_selected_label,voice_speak_attempts," +
                 "voice_last_utterance,voice_last_result,voice_last_attempt_ms,voice_updated_at_ms," +
                 "motion_event,motion_event_sequence,lane_change_event,lane_change_event_sequence," +
-                "session_left_lateral_events,session_right_lateral_events,session_turn_events,session_rejected_motion_spikes"
+                "session_left_lateral_events,session_right_lateral_events,session_turn_events,session_rejected_motion_spikes," +
+                "lane_change_new,lane_change_map_eligible,lane_change_rejection"
     }
 }
