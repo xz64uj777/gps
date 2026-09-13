@@ -590,8 +590,21 @@ private fun NavigationScreen(
 
     val fixAge = state.lastUpdateMillis?.let { (nowMillis - it).coerceAtLeast(0L) }
     val gpsStale = sessionActive && state.fixReceived && fixAge != null && fixAge > 3_000L
-    val laneCount = if (gpsStale) null else state.likelyLaneCount?.coerceIn(1, 8)
-    val laneNumber = if (gpsStale) null else state.likelyLaneNumberFromLeft
+    val rawLaneCount = if (gpsStale) null else state.likelyLaneCount?.takeIf { it in 1..8 }
+    var laneCount by remember { mutableStateOf<Int?>(null) }
+    LaunchedEffect(rawLaneCount, gpsStale) {
+        if (gpsStale) {
+            laneCount = null
+        } else if (rawLaneCount != laneCount) {
+            // Cancel and restart when counts oscillate; retain only the diagram,
+            // never a current-lane highlight, while the new geometry settles.
+            kotlinx.coroutines.delay(1_500L)
+            laneCount = rawLaneCount
+        }
+    }
+    val layoutSettling = laneCount != rawLaneCount
+    val laneNumber = if (gpsStale || layoutSettling || !state.laneExactClaim) null
+        else state.likelyLaneNumberFromLeft
     val route = routeUi.summary
 
     BoxWithConstraints(
@@ -628,7 +641,7 @@ private fun NavigationScreen(
                     Column(Modifier.weight(1.25f)) {
                         ManeuverCard(route, routeUi, sessionActive)
                         Spacer(Modifier.height(10.dp))
-                        LaneCard(state, laneNumber, laneCount, gpsStale)
+                        LaneCard(state, laneNumber, laneCount, gpsStale, layoutSettling)
                         Spacer(Modifier.height(10.dp))
                         NavigationMapHost(mapView, Modifier.fillMaxWidth().height(440.dp))
                     }
@@ -649,7 +662,7 @@ private fun NavigationScreen(
             } else if (sessionActive) {
                 ManeuverCard(route, routeUi, true)
                 Spacer(Modifier.height(10.dp))
-                LaneCard(state, laneNumber, laneCount, gpsStale)
+                LaneCard(state, laneNumber, laneCount, gpsStale, layoutSettling)
                 Spacer(Modifier.height(10.dp))
                 NavigationMapHost(mapView, Modifier.fillMaxWidth().height(340.dp))
                 Spacer(Modifier.height(10.dp))
@@ -675,7 +688,7 @@ private fun NavigationScreen(
                     onPrimaryAction = onPrimaryAction,
                 )
                 Spacer(Modifier.height(10.dp))
-                LaneCard(state, laneNumber, laneCount, gpsStale)
+                LaneCard(state, laneNumber, laneCount, gpsStale, layoutSettling)
                 Spacer(Modifier.height(10.dp))
                 ManeuverCard(route, routeUi, false)
                 Spacer(Modifier.height(10.dp))
@@ -902,6 +915,7 @@ private fun LaneCard(
     laneNumber: Int?,
     laneCount: Int?,
     gpsStale: Boolean,
+    layoutSettling: Boolean,
 ) {
     val countKnown = laneCount != null && laneCount in 1..8
     val laneKnown = countKnown && laneNumber != null && laneNumber in 1..laneCount!!
@@ -920,6 +934,7 @@ private fun LaneCard(
                     Text(
                         when {
                             gpsStale -> "GPS LOST"
+                            layoutSettling -> "UPDATING ROAD LANES"
                             exact -> "LANE $laneNumber OF $laneCount"
                             laneKnown -> "LIKELY $laneNumber OF $laneCount"
                             countKnown -> "$laneCount LANES · POSITION UNCERTAIN"
@@ -990,6 +1005,7 @@ private fun LaneCard(
                 Spacer(Modifier.height(7.dp))
                 Text(
                     when {
+                        layoutSettling -> "Previous road layout · checking new lane data"
                         exact -> "Green = LaneGPS has enough evidence for an exact current-lane claim."
                         laneKnown -> "Amber = likely current lane; GPS uncertainty is still being respected."
                         else -> "Road lane count is known; LaneGPS is still deciding which lane you occupy."
@@ -1001,7 +1017,7 @@ private fun LaneCard(
                 Box(
                     Modifier
                         .fillMaxWidth()
-                        .height(78.dp)
+                        .height(96.dp)
                         .background(Color(0xFF0C1220), RoundedCornerShape(12.dp)),
                     contentAlignment = Alignment.Center,
                 ) {
