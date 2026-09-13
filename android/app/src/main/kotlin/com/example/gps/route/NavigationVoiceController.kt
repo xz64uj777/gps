@@ -1,5 +1,7 @@
 package com.example.gps.route
 
+import com.example.gps.laneengine.VoicePromptGate
+import android.os.SystemClock
 import android.content.Context
 import android.speech.tts.TextToSpeech
 import android.speech.tts.Voice
@@ -34,8 +36,7 @@ class NavigationVoiceController(
 
     private var ready = false
     private var voiceOptions: List<VoiceOption> = emptyList()
-    private var lastManeuverKey: String? = null
-    private var lastDistanceBucket: Int? = null
+    private val promptGate = VoicePromptGate()
     private var arrivalSpoken = false
 
     override fun onInit(status: Int) {
@@ -76,8 +77,7 @@ class NavigationVoiceController(
     }
 
     fun resetRoute() {
-        lastManeuverKey = null
-        lastDistanceBucket = null
+        promptGate.reset()
         arrivalSpoken = false
     }
 
@@ -113,21 +113,12 @@ class NavigationVoiceController(
         val maneuver = route.nextManeuver.trim()
         if (maneuver.isBlank()) return
         val road = route.nextRoad.trim()
-        val maneuverKey = "$maneuver|$road"
-        val changed = maneuverKey != lastManeuverKey
-        val bucket = distanceBucket(route.nextManeuverDistanceMeters)
-        val previousBucket = lastDistanceBucket
-        // Only announce a threshold when we move into a *closer* bucket.
-        // GPS/route jitter can briefly make the distance grow again; that must
-        // never re-arm a prompt we already spoke.
-        val crossedCloserThreshold = !changed &&
-            bucket != null &&
-            previousBucket != null &&
-            bucket < previousBucket
-
-        if (force || changed || crossedCloserThreshold) {
-            lastManeuverKey = maneuverKey
-            lastDistanceBucket = bucket
+        val upcoming = route.maneuvers.firstOrNull {
+            it.routeIndex >= route.progressIndex && it.label == maneuver && it.road == road
+        }
+        val maneuverKey = "$maneuver|$road|${upcoming?.lat}|${upcoming?.lon}"
+        if (promptGate.shouldSpeak(maneuverKey, route.nextManeuverDistanceMeters,
+                SystemClock.elapsedRealtime(), force)) {
             val distance = spokenDistance(route.nextManeuverDistanceMeters)
             val roadPhrase = if (road.isNotBlank() && !maneuver.contains(road, ignoreCase = true)) {
                 " onto $road"
@@ -139,17 +130,8 @@ class NavigationVoiceController(
                 distance.isNotBlank() -> "In $distance, $maneuver$roadPhrase."
                 else -> "$maneuver$roadPhrase."
             }
-            speak(instruction, "maneuver-${maneuverKey.hashCode()}-${bucket ?: -1}")
+            speak(instruction, "maneuver-${maneuverKey.hashCode()}-${if (route.nextManeuverDistanceMeters <= 55.0) 0 else 1}")
         }
-    }
-
-    private fun distanceBucket(meters: Double): Int? = when {
-        !meters.isFinite() -> null
-        meters <= 55.0 -> 0
-        meters <= 125.0 -> 1
-        meters <= 300.0 -> 2
-        meters <= 805.0 -> 3
-        else -> 4
     }
 
     private fun spokenDistance(meters: Double): String {
