@@ -10,7 +10,7 @@ import android.content.Intent
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
-import com.example.gps.MainActivity
+import com.example.gps.NavigationActivity
 import com.example.gps.lane.DirectOsmLaneClient
 import com.example.gps.laneengine.FixFreshness
 import com.example.gps.laneengine.GeoPoint
@@ -89,11 +89,20 @@ class DriveTrackingService : Service() {
             latestState = null
             store.clearSession()
             synchronized(laneLock) {
+                val warm = LaneCorridorMemoryCache.read()
                 laneMatcher = LaneMatcher()
-                cachedLanes = emptyList()
-                laneOverlay = LaneOverlay(status = "OSM DIRECT · WAITING FOR LOCATION")
-                laneFetchStatus = "WAITING"
-                lastLaneFetchPoint = null
+                cachedLanes = warm?.lanes.orEmpty()
+                laneOverlay = if (cachedLanes.isEmpty()) {
+                    LaneOverlay(status = "OSM DIRECT · WAITING FOR LOCATION")
+                } else {
+                    LaneOverlay(
+                        status = "CACHED OSM LANE DATA · REFRESHING",
+                        candidateCount = cachedLanes.size,
+                    )
+                }
+                laneFetchStatus = if (cachedLanes.isEmpty()) "WAITING" else "WARM CACHE"
+                lastLaneFetchPoint = warm?.anchor
+                // Force a background refresh even when warm data is available.
                 lastLaneFetchSuccessElapsed = 0L
                 lastLaneFetchAttemptElapsed = 0L
             }
@@ -185,6 +194,7 @@ class DriveTrackingService : Service() {
                     laneFetchStatus = "OK $endpointHost +${corridor.lanes.size} cache${merged.size}"
                     lastLaneFetchSuccessElapsed = SystemClock.elapsedRealtime()
                     lastLaneFetchPoint = current
+                    LaneCorridorMemoryCache.write(merged, current)
                     laneOverlay = if (merged.isEmpty()) {
                         LaneOverlay(status = "NO USABLE OSM ROAD/LANE DATA NEARBY · FETCH $laneFetchStatus")
                     } else {
@@ -443,7 +453,7 @@ class DriveTrackingService : Service() {
     }
 
     private fun buildNotification(): Notification {
-        val openIntent = Intent(this, MainActivity::class.java)
+        val openIntent = Intent(this, NavigationActivity::class.java)
         val openPendingIntent = PendingIntent.getActivity(
             this,
             0,
