@@ -158,22 +158,58 @@ class NavigationVoiceController(
     }
 
     private fun refreshVoices() {
-        val english = tts.voices.orEmpty()
-            .filter { it.locale?.language.equals("en", ignoreCase = true) }
-            .sortedWith(compareBy<Voice>({ it.isNetworkConnectionRequired }, { it.locale.toLanguageTag() }, { it.name }))
+        val available = tts.voices.orEmpty()
+            .filter { voice ->
+                val locale = voice.locale ?: return@filter false
+                val country = locale.country.uppercase(Locale.US)
+                val language = locale.language.lowercase(Locale.US)
+                country !in HIDDEN_COUNTRIES && language in SUPPORTED_VOICE_LANGUAGES
+            }
+            .sortedWith(
+                compareBy<Voice>(
+                    { voicePriority(it.locale) },
+                    { it.isNetworkConnectionRequired },
+                    { it.locale.toLanguageTag() },
+                    { it.name },
+                )
+            )
 
         voiceOptions = buildList {
             add(VoiceOption(DEFAULT_VOICE_ID, "System default"))
-            english.forEachIndexed { index, voice ->
-                val region = voice.locale.displayCountry.takeIf { it.isNotBlank() }
-                val local = if (voice.isNetworkConnectionRequired) "online" else "device"
-                val label = buildString {
-                    append("Voice ${index + 1}")
-                    if (region != null) append(" · $region")
-                    append(" · $local")
+            available.forEach { voice ->
+                val locale = voice.locale
+                val languageLabel = when (locale.language.lowercase(Locale.US)) {
+                    "pl" -> "Polish"
+                    else -> "English"
                 }
-                add(VoiceOption(voice.name, label))
+                val country = locale.getDisplayCountry(Locale.US).ifBlank {
+                    locale.country.ifBlank { "International" }
+                }
+                val source = if (voice.isNetworkConnectionRequired) "online" else "device"
+                add(
+                    VoiceOption(
+                        voice.name,
+                        "$languageLabel · $country · $source",
+                    )
+                )
             }
+        }
+    }
+
+    private fun voicePriority(locale: Locale?): Int {
+        if (locale == null) return 99
+        val country = locale.country.uppercase(Locale.US)
+        val language = locale.language.lowercase(Locale.US)
+        return when {
+            language == "en" && country == "IE" -> 0
+            language == "en" && country == "GB" -> 1
+            language == "pl" || country == "PL" -> 2
+            language == "en" && country == "AU" -> 3
+            language == "en" && country == "NZ" -> 4
+            language == "en" && country == "CA" -> 5
+            language == "en" && country == "US" -> 6
+            language == "en" -> 7
+            else -> 8
         }
     }
 
@@ -183,7 +219,15 @@ class NavigationVoiceController(
             tts.defaultVoice?.let { tts.voice = it }
             return
         }
-        findVoice(id)?.let { tts.voice = it }
+        val optionStillVisible = voiceOptions.any { it.id == id }
+        val saved = if (optionStillVisible) findVoice(id) else null
+        if (saved != null) {
+            tts.voice = saved
+        } else {
+            prefs.edit().putString(KEY_VOICE_ID, DEFAULT_VOICE_ID).apply()
+            tts.language = Locale.US
+            tts.defaultVoice?.let { tts.voice = it }
+        }
     }
 
     private fun findVoice(id: String): Voice? =
@@ -209,5 +253,7 @@ class NavigationVoiceController(
         private const val PREFS_NAME = "lane_gps_voice"
         private const val KEY_MUTED = "muted"
         private const val KEY_VOICE_ID = "voice_id"
+        private val HIDDEN_COUNTRIES = setOf("IN", "NG")
+        private val SUPPORTED_VOICE_LANGUAGES = setOf("en", "pl")
     }
 }
