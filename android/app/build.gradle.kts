@@ -7,7 +7,7 @@ android {
     namespace = "com.example.gps"
     compileSdk = 37
     defaultConfig {
-        applicationId = "com.example.lanelevelgps"
+        applicationId = "com.lanegps.navigation"
         minSdk = 29
         targetSdk = 37
         versionCode = System.getenv("LANE_GPS_VERSION_CODE")?.toIntOrNull() ?: 1
