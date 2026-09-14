@@ -17,6 +17,8 @@ android {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
     implementation(project(":lane-engine"))
     val composeBom = platform("androidx.compose:compose-bom:2026.08.00")
     implementation(composeBom)

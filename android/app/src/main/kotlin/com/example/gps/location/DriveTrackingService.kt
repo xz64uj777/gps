@@ -136,6 +136,8 @@ class DriveTrackingService : Service() {
     }
 
     private fun stopAndSave() {
+        com.example.gps.route.NavigationTelemetryRuntime.lifecycle("NAVIGATION_STOPPED")
+        com.example.gps.route.ActiveNavigationStore(this).clear()
         tracker?.stop()
         tracker = null
         val finalState = mergeLaneOverlay(latestState ?: store.load()).copy(

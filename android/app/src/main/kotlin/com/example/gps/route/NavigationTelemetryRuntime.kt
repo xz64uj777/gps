@@ -29,6 +29,10 @@ object NavigationTelemetryRuntime {
 
     fun snapshot(): Snapshot = latest
 
+    fun lifecycle(event: String, destination: String = latest.destination) {
+        latest = latest.copy(event = event, destination = destination, updatedAtMillis = System.currentTimeMillis())
+    }
+
     fun resetForDrive() {
         latest = Snapshot()
     }

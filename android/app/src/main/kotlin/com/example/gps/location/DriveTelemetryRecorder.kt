@@ -20,6 +20,7 @@ class DriveTelemetryRecorder(context: Context) {
     fun startNew() {
         logDir.mkdirs()
         NavigationTelemetryRuntime.resetForDrive()
+        NavigationTelemetryRuntime.lifecycle("DRIVE_STARTED")
         NavigationVoiceTelemetryRuntime.resetForDrive()
         lastRecordedLaneChangeSequence = 0L
         logFile.writeText(HEADER + "\n")
@@ -104,12 +105,15 @@ class DriveTelemetryRecorder(context: Context) {
         }
 
         val cutoff = lastUseful + EXPORT_TAIL_GRACE_MS
+        val navEventIndex = parseCsvLine(lines.first()).indexOf("nav_event")
         output.bufferedWriter().use { writer ->
             writer.appendLine(lines.first())
             for (line in lines.drop(1)) {
                 val fields = parseCsvLine(line)
                 val recordedAt = fields.getOrNull(RECORDED_AT_INDEX)?.toLongOrNull()
-                if (recordedAt != null && recordedAt > cutoff) break
+                val event = fields.getOrNull(navEventIndex).orEmpty()
+                val lifecycle = event.startsWith("ROUTE_") || event == "NAVIGATION_STOPPED" || event == "DRIVE_STARTED"
+                if (recordedAt != null && recordedAt > cutoff && !lifecycle) continue
                 writer.appendLine(line)
             }
         }

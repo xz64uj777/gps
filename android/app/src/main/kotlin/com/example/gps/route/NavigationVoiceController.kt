@@ -94,6 +94,8 @@ class NavigationVoiceController(
         maybeSpeak(route, force = false)
     }
 
+    fun stopSpeaking() { tts.stop() }
+
     fun shutdown() {
         tts.stop()
         tts.shutdown()

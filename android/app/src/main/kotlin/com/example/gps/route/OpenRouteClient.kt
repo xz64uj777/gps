@@ -81,7 +81,6 @@ class OpenRouteClient {
             geocode(query)
         }
         val result = route(originLat, originLon, place)
-        publishTelemetry(result, "PLAN")
         return result
     }
 
@@ -99,7 +98,6 @@ class OpenRouteClient {
                 lon = previous.destinationLon,
             ),
         )
-        publishTelemetry(result, "REROUTE", incrementReroute = true)
         return result
     }
 

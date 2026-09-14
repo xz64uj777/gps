@@ -9,6 +9,13 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import com.example.gps.route.ActiveNavigationStore
+import com.example.gps.route.NavigationTelemetryRuntime
+import com.example.gps.location.DriveTelemetryRecorder
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -80,12 +87,10 @@ private data class NavigationRouteUi(
     val summary: OpenRouteClient.RouteSummary? = null,
 )
 
-private object NavigationRuntimeCache {
-    @Volatile var query: String = ""
-    @Volatile var route: OpenRouteClient.RouteSummary? = null
-}
-
 class NavigationActivity : ComponentActivity() {
+    private lateinit var navigationStore: ActiveNavigationStore
+    private var routeGeneration = 0L
+    private var lastRouteCheckpoint = 0L
     private lateinit var store: DriveSessionStore
     private val routeClient = OpenRouteClient()
     private val routeExecutor = Executors.newSingleThreadExecutor()
@@ -110,6 +115,7 @@ class NavigationActivity : ComponentActivity() {
         runOnUiThread {
             uiState = state
             sessionActive = store.isActive()
+            if (!sessionActive && (routeUi.summary != null || pendingRouteQuery != null || routeUi.planning)) clearRoute()
 
             val pending = pendingRouteQuery
             if (pending != null && freshLocation(state)) {
@@ -131,11 +137,16 @@ class NavigationActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        navigationStore = ActiveNavigationStore(this)
         store = DriveSessionStore(this)
         uiState = DriveSessionRuntime.latest() ?: store.load()
         sessionActive = store.isActive()
-        routeQuery = NavigationRuntimeCache.query
-        routeUi = NavigationRouteUi(summary = NavigationRuntimeCache.route)
+        val recovered = if (sessionActive) navigationStore.load() else null
+        if (!sessionActive) navigationStore.clear()
+        routeQuery = recovered?.destinationName.orEmpty()
+        routeUi = NavigationRouteUi(summary = recovered)
+        if (recovered != null) logRouteEvent("ROUTE_RECOVERED")
 
         MapLibre.getInstance(this)
         mapView = MapView(this)
@@ -147,6 +158,10 @@ class NavigationActivity : ComponentActivity() {
             readyMap.uiSettings.isAttributionEnabled = true
             readyMap.uiSettings.isRotateGesturesEnabled = true
             readyMap.uiSettings.isTiltGesturesEnabled = true
+            // Keep attribution above the floating bottom controls.
+            val density = resources.displayMetrics.density
+            readyMap.uiSettings.setAttributionMargins((8 * density).toInt(), 0, 0, (196 * density).toInt())
+            readyMap.uiSettings.setLogoMargins((8 * density).toInt(), 0, 0, (220 * density).toInt())
             readyMap.setStyle(MAP_STYLE_URI) { style ->
                 installNavigationLayers(style)
                 mapStyleReady = true
@@ -171,11 +186,9 @@ class NavigationActivity : ComponentActivity() {
                     mapView = mapView,
                     onQueryChange = {
                         routeQuery = it
-                        NavigationRuntimeCache.query = it
                     },
                     onQuickRoute = { quick ->
                         routeQuery = quick
-                        NavigationRuntimeCache.query = quick
                         if (sessionActive) {
                             requestRoutePlan(quick)
                         } else {
@@ -219,6 +232,7 @@ class NavigationActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        if (store.isActive()) routeUi.summary?.let { navigationStore.save(it) }
         DriveSessionRuntime.removeListener(runtimeListener)
         mapView.onStop()
         super.onStop()
@@ -235,6 +249,7 @@ class NavigationActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        routeGeneration++
         routeExecutor.shutdownNow()
         mapView.onDestroy()
         super.onDestroy()
@@ -247,7 +262,6 @@ class NavigationActivity : ComponentActivity() {
             return
         }
         routeQuery = query
-        NavigationRuntimeCache.query = query
 
         if (freshLocation(uiState)) {
             pendingRouteQuery = null
@@ -264,15 +278,18 @@ class NavigationActivity : ComponentActivity() {
     private fun planNewRoute(query: String, lat: Double, lon: Double) {
         if (routeUi.planning) return
         routeUi = routeUi.copy(planning = true, waitingForGps = false, error = null)
+        val generation = ++routeGeneration
         routeExecutor.execute {
             val result = runCatching { routeClient.plan(query, lat, lon) }
             runOnUiThread {
+                if (isDestroyed || generation != routeGeneration || !store.isActive()) return@runOnUiThread
                 routeUi = result.fold(
                     onSuccess = { planned ->
                         val summary = if (freshLocation(uiState)) {
                             routeClient.updateProgress(planned, uiState.latitude!!, uiState.longitude!!)
                         } else planned
-                        NavigationRuntimeCache.route = summary
+                        navigationStore.save(summary)
+                        DestinationStore(this).addRecent(summary.destinationName)
                         offRouteFixStreak = 0
                         NavigationRouteUi(summary = summary)
                     },
@@ -283,6 +300,7 @@ class NavigationActivity : ComponentActivity() {
                         )
                     },
                 )
+                logRouteEvent(if (result.isSuccess) "ROUTE_STARTED" else "ROUTE_PLAN_FAILED")
                 updateMapFromState(uiState, routeUi.summary, forceCamera = true)
             }
         }
@@ -296,7 +314,10 @@ class NavigationActivity : ComponentActivity() {
         lastProgressFixTimestamp = fixTimestamp
 
         val progressed = routeClient.updateProgress(summary, state.latitude!!, state.longitude!!)
-        NavigationRuntimeCache.route = progressed
+        if (SystemClock.elapsedRealtime() - lastRouteCheckpoint >= 5_000L || progressed.arrived) {
+            navigationStore.save(progressed)
+            lastRouteCheckpoint = SystemClock.elapsedRealtime()
+        }
         routeUi = routeUi.copy(summary = progressed, error = null)
 
         if (!sessionActive || progressed.arrived || routeUi.planning || routeUi.rerouting) {
@@ -323,15 +344,18 @@ class NavigationActivity : ComponentActivity() {
     private fun reroute(previous: OpenRouteClient.RouteSummary, lat: Double, lon: Double) {
         if (routeUi.rerouting) return
         routeUi = routeUi.copy(rerouting = true, error = null)
+        val generation = ++routeGeneration
         routeExecutor.execute {
             val result = runCatching { routeClient.reroute(previous, lat, lon) }
             runOnUiThread {
+                if (isDestroyed || generation != routeGeneration || !store.isActive()) return@runOnUiThread
                 routeUi = result.fold(
                     onSuccess = { planned ->
                         val summary = if (freshLocation(uiState)) {
                             routeClient.updateProgress(planned, uiState.latitude!!, uiState.longitude!!)
                         } else planned
-                        NavigationRuntimeCache.route = summary
+                        navigationStore.save(summary)
+                        DestinationStore(this).addRecent(summary.destinationName)
                         routeUi.copy(rerouting = false, summary = summary, error = null)
                     },
                     onFailure = { error ->
@@ -341,15 +365,17 @@ class NavigationActivity : ComponentActivity() {
                         )
                     },
                 )
+                logRouteEvent(if (result.isSuccess) "ROUTE_REROUTED" else "ROUTE_REROUTE_FAILED")
                 updateMapFromState(uiState, routeUi.summary, forceCamera = true)
             }
         }
     }
 
     private fun clearRoute() {
+        routeGeneration++
+        logRouteEvent("ROUTE_STOPPED")
         pendingRouteQuery = null
-        NavigationRuntimeCache.query = ""
-        NavigationRuntimeCache.route = null
+        navigationStore.clear()
         routeQuery = ""
         routeUi = NavigationRouteUi()
         offRouteFixStreak = 0
@@ -357,8 +383,9 @@ class NavigationActivity : ComponentActivity() {
     }
 
     private fun clearRouteForFreeDrive() {
+        routeGeneration++
         pendingRouteQuery = null
-        NavigationRuntimeCache.route = null
+        navigationStore.clear()
         routeUi = NavigationRouteUi()
         offRouteFixStreak = 0
         updateMapFromState(uiState, null, forceCamera = true)
@@ -383,8 +410,7 @@ class NavigationActivity : ComponentActivity() {
         if (destination.isBlank()) {
             clearRouteForFreeDrive()
         } else {
-            NavigationRuntimeCache.query = destination
-            NavigationRuntimeCache.route = null
+            navigationStore.clear()
             pendingRouteQuery = destination
             routeUi = NavigationRouteUi(
                 waitingForGps = true,
@@ -409,11 +435,21 @@ class NavigationActivity : ComponentActivity() {
     }
 
     private fun stopDrive() {
+        clearRoute()
         sessionActive = false
         startService(
             Intent(this, DriveTrackingService::class.java)
                 .setAction(DriveTrackingService.ACTION_STOP)
         )
+    }
+
+    private fun logRouteEvent(event: String) {
+        if (!store.isActive()) return
+        val route = routeUi.summary
+        if (route != null) {
+            NavigationTelemetryRuntime.publish(route, event, route.progressIndex, null, event == "ROUTE_REROUTED")
+        } else NavigationTelemetryRuntime.lifecycle(event, routeQuery)
+        DriveTelemetryRecorder(this).append(uiState)
     }
 
     private fun hasFineLocationPermission(): Boolean =
@@ -587,6 +623,50 @@ private fun NavigationScreen(
     onEnableLocation: () -> Unit,
     onOpenDiagnostics: () -> Unit,
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var showDestination by rememberSaveable { mutableStateOf(false) }
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
+    var voiceState by remember {
+        mutableStateOf(
+            NavigationVoiceController.State(
+                ready = false,
+                muted = false,
+                voices = emptyList(),
+                selectedVoiceId = NavigationVoiceController.DEFAULT_VOICE_ID,
+            )
+        )
+    }
+    val voiceController = remember {
+        NavigationVoiceController(context.applicationContext) { state ->
+            mainHandler.post { voiceState = state }
+        }
+    }
+
+    DisposableEffect(voiceController) {
+        onDispose { voiceController.shutdown() }
+    }
+
+    LaunchedEffect(Unit) {
+        voiceState = voiceController.state()
+    }
+
+    LaunchedEffect(routeUi.summary?.routeStartedAtMillis) {
+        routeUi.summary?.let { voiceController.onRouteStarted(it) } ?: voiceController.stopSpeaking()
+    }
+
+    LaunchedEffect(
+        routeUi.summary?.progressIndex,
+        routeUi.summary?.nextManeuver,
+        routeUi.summary?.nextManeuverDistanceMeters?.roundToInt(),
+        routeUi.summary?.arrived,
+    ) {
+        routeUi.summary?.let { voiceController.onProgress(it) }
+    }
+
+    LaunchedEffect(routeUi.rerouting) {
+        if (routeUi.rerouting) voiceController.announceRerouting()
+    }
+
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(sessionActive, state.lastUpdateMillis) {
         nowMillis = System.currentTimeMillis()
@@ -615,127 +695,121 @@ private fun NavigationScreen(
         else state.likelyLaneNumberFromLeft
     val route = routeUi.summary
 
-    BoxWithConstraints(
-        Modifier
-            .fillMaxSize()
-            .background(NavBg)
-    ) {
-        val wide = maxWidth >= 700.dp
+    BoxWithConstraints(Modifier.fillMaxSize().background(NavBg)) {
+        val wide = maxWidth >= 600.dp
+        AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize())
         Column(
-            Modifier
-                .fillMaxSize()
-                .imePadding()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = if (wide) 20.dp else 14.dp, vertical = 12.dp)
+            Modifier.align(Alignment.TopStart).statusBarsPadding()
+                .padding(8.dp).widthIn(max = if (wide) 390.dp else 540.dp).fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            NavigationHeader(sessionActive, gpsStale, routeUi.rerouting, route != null)
-            Spacer(Modifier.height(10.dp))
-
-            if (gpsStale) {
-                StatusBanner(
-                    title = "GPS SIGNAL LOST",
-                    text = "Lane guidance and route progress are paused until a fresh fix returns.",
-                    color = NavRed,
-                )
-                Spacer(Modifier.height(10.dp))
-            }
-
-            if (wide) {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.Top,
-                ) {
-                    Column(Modifier.weight(1.25f)) {
-                        ManeuverCard(route, routeUi, sessionActive)
-                        Spacer(Modifier.height(10.dp))
-                        LaneCard(state, laneNumber, laneCount, gpsStale, layoutSettling)
-                        Spacer(Modifier.height(10.dp))
-                        NavigationMapHost(mapView, Modifier.fillMaxWidth().height(440.dp))
-                    }
-                    Column(Modifier.weight(0.75f)) {
-                        DestinationCard(
-                            query = query,
-                            routeUi = routeUi,
-                            sessionActive = sessionActive,
-                            onQueryChange = onQueryChange,
-                            onQuickRoute = onQuickRoute,
-                            onClearRoute = onClearRoute,
-                            onPrimaryAction = onPrimaryAction,
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        CompactMetrics(state, gpsStale)
-                    }
-                }
-            } else if (sessionActive) {
-                ManeuverCard(route, routeUi, true)
-                Spacer(Modifier.height(10.dp))
-                LaneCard(state, laneNumber, laneCount, gpsStale, layoutSettling)
-                Spacer(Modifier.height(10.dp))
-                NavigationMapHost(mapView, Modifier.fillMaxWidth().height(340.dp))
-                Spacer(Modifier.height(10.dp))
-                CompactMetrics(state, gpsStale)
-                Spacer(Modifier.height(10.dp))
-                DestinationCard(
-                    query = query,
-                    routeUi = routeUi,
-                    sessionActive = true,
-                    onQueryChange = onQueryChange,
-                    onQuickRoute = onQuickRoute,
-                    onClearRoute = onClearRoute,
-                    onPrimaryAction = onPrimaryAction,
-                )
-            } else {
-                DestinationCard(
-                    query = query,
-                    routeUi = routeUi,
-                    sessionActive = false,
-                    onQueryChange = onQueryChange,
-                    onQuickRoute = onQuickRoute,
-                    onClearRoute = onClearRoute,
-                    onPrimaryAction = onPrimaryAction,
-                )
-                Spacer(Modifier.height(10.dp))
-                LaneCard(state, laneNumber, laneCount, gpsStale, layoutSettling)
-                Spacer(Modifier.height(10.dp))
-                ManeuverCard(route, routeUi, false)
-                Spacer(Modifier.height(10.dp))
-                NavigationMapHost(mapView, Modifier.fillMaxWidth().height(320.dp))
-                Spacer(Modifier.height(10.dp))
-                CompactMetrics(state, gpsStale)
-            }
-
-            if (sessionActive) {
-                Spacer(Modifier.height(12.dp))
-                Button(
-                    onClick = onStopDrive,
-                    modifier = Modifier.fillMaxWidth().height(58.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = NavRed,
-                        contentColor = Color(0xFF07101E),
-                    ),
-                    shape = RoundedCornerShape(16.dp),
-                ) {
+            Surface(color = NavCardStrong, shape = RoundedCornerShape(16.dp)) {
+                Column(Modifier.padding(10.dp)) {
                     Text(
-                        "STOP & SAVE DRIVE",
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 16.sp,
+                        when {
+                            gpsStale -> "GPS LOST · guidance paused"
+                            routeUi.rerouting -> "REROUTING…"
+                            routeUi.planning -> "BUILDING ROUTE…"
+                            routeUi.waitingForGps -> "WAITING FOR ACCURATE GPS…"
+                            route?.arrived == true -> "ARRIVED"
+                            route != null -> "NAVIGATION"
+                            sessionActive -> "FREE DRIVE"
+                            else -> "LaneGPS · READY"
+                        }, color = if (gpsStale) NavRed else NavBlueSoft,
+                        fontWeight = FontWeight.Bold, fontSize = 12.sp,
                     )
+                    Text(route?.nextManeuver ?: if (sessionActive) "Live road follow" else "Choose destination or Free Drive",
+                        color = Color.White, fontSize = 21.sp, fontWeight = FontWeight.Bold, maxLines = 2)
+                    route?.let {
+                        Text("${formatNavDistance(it.nextManeuverDistanceMeters)} · ${it.nextRoad}",
+                            color = Color.White, fontSize = 14.sp, maxLines = 1)
+                    }
+                    routeUi.error?.let { Text(it, color = NavAmber, fontSize = 12.sp, maxLines = 2) }
                 }
             }
-
-            if (!state.permissionFine && !sessionActive) {
-                Spacer(Modifier.height(8.dp))
-                OutlinedButton(onClick = onEnableLocation, modifier = Modifier.fillMaxWidth()) {
-                    Text("Enable precise location")
+            CompactLaneOverlay(state, laneNumber, laneCount, gpsStale, layoutSettling, sessionActive)
+        }
+        Surface(
+            modifier = Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(8.dp)
+                .widthIn(max = if (wide) 390.dp else 540.dp).fillMaxWidth(),
+            color = NavCard, shape = RoundedCornerShape(16.dp),
+        ) {
+            Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    "${if (gpsStale || !sessionActive) "—" else ((state.speedMps ?: 0f) * 2.23694f).roundToInt().toString()} mph" +
+                        (route?.let { " · ${formatNavDistance(it.distanceMeters)} · ${formatNavDuration(it.durationSeconds)}" } ?: ""),
+                    color = Color.White, fontWeight = FontWeight.Bold, fontSize = 17.sp,
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedButton(onClick = { showDestination = true }, modifier = Modifier.weight(1f)) {
+                        Text("Search / options", maxLines = 1)
+                    }
+                    OutlinedButton(onClick = { voiceController.setMuted(!voiceState.muted) }) {
+                        Text(if (voiceState.muted) "UNMUTE" else "MUTE")
+                    }
+                }
+                if (sessionActive) {
+                    Button(onClick = onStopDrive, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = NavRed, contentColor = NavBg)) {
+                        Text("STOP NAVIGATION", fontWeight = FontWeight.ExtraBold)
+                    }
+                } else {
+                    Button(onClick = { onQueryChange(""); onQuickRoute("") }, modifier = Modifier.fillMaxWidth()) {
+                        Text("START FREE DRIVE")
+                    }
                 }
             }
-
-            Spacer(Modifier.height(8.dp))
-            TextButton(onClick = onOpenDiagnostics, modifier = Modifier.align(Alignment.CenterHorizontally)) {
-                Text("Detailed diagnostics & Trip Lab", color = NavBlueSoft)
+        }
+    }
+    if (showDestination) {
+        Dialog(onDismissRequest = { showDestination = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+            Surface(Modifier.fillMaxSize().systemBarsPadding().imePadding(), color = NavBg) {
+                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp)) {
+                    TextButton(onClick = { showDestination = false }) { Text("BACK TO MAP") }
+                    DestinationCard(
+                        voiceController = voiceController, voiceState = voiceState,
+                        query = query, routeUi = routeUi, sessionActive = sessionActive,
+                        onQueryChange = onQueryChange,
+                        onQuickRoute = { showDestination = false; onQuickRoute(it) },
+                        onClearRoute = onClearRoute,
+                        onPrimaryAction = { showDestination = false; onPrimaryAction() },
+                    )
+                    if (!state.permissionFine && !sessionActive) {
+                        TextButton(onClick = onEnableLocation) { Text("Enable precise location") }
+                    }
+                    TextButton(onClick = onOpenDiagnostics) { Text("Diagnostics & Trip Lab") }
+                }
             }
-            Spacer(Modifier.height(22.dp))
+        }
+    }
+}
+
+@Composable
+private fun CompactLaneOverlay(state: GnssUiState, laneNumber: Int?, laneCount: Int?, stale: Boolean, settling: Boolean, active: Boolean) {
+    // Same conservative inputs as the original LaneCard; no highlight during settling or stale GPS.
+    val exact = active && !stale && !settling && state.laneExactClaim &&
+        laneNumber != null && laneCount != null && laneNumber in 1..laneCount
+    Surface(color = NavCard, shape = RoundedCornerShape(16.dp)) {
+        Column(Modifier.padding(10.dp)) {
+            Text(when {
+                !active -> "LANE GUIDANCE · start a drive"
+                stale -> "LANES UNKNOWN · GPS lost"
+                settling -> "UPDATING ROAD LANES"
+                exact -> "LANE $laneNumber OF $laneCount"
+                laneCount != null -> "$laneCount LANES · POSITION UNCERTAIN"
+                else -> "LANES UNKNOWN · scanning road"
+            }, color = if (exact) NavGreen else NavAmber, fontWeight = FontWeight.ExtraBold, fontSize = 16.sp)
+            if (active && laneCount != null && !stale) {
+                Row(Modifier.fillMaxWidth().padding(top = 5.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    repeat(laneCount) { index ->
+                        val current = exact && index + 1 == laneNumber
+                        Surface(Modifier.weight(1f), color = if (current) NavGreen else NavCardStrong, shape = RoundedCornerShape(6.dp)) {
+                            Text("↑", modifier = Modifier.padding(vertical = 3.dp), textAlign = TextAlign.Center,
+                                color = if (current) NavBg else NavBlueSoft, fontSize = 25.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1055,6 +1129,8 @@ private fun LaneCard(
 
 @Composable
 private fun DestinationCard(
+    voiceController: NavigationVoiceController,
+    voiceState: NavigationVoiceController.State,
     query: String,
     routeUi: NavigationRouteUi,
     sessionActive: Boolean,
@@ -1064,6 +1140,7 @@ private fun DestinationCard(
     onPrimaryAction: () -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    var voiceMenuExpanded by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
     val store = remember { DestinationStore(context.applicationContext) }
     val photon = remember { PhotonSearchClient() }
@@ -1074,49 +1151,6 @@ private fun DestinationCard(
     var remoteSuggestions by remember { mutableStateOf<List<PhotonSearchClient.Suggestion>>(emptyList()) }
     var searching by remember { mutableStateOf(false) }
     var queryFocused by remember { mutableStateOf(false) }
-
-    val mainHandler = remember { Handler(Looper.getMainLooper()) }
-    var voiceState by remember {
-        mutableStateOf(
-            NavigationVoiceController.State(
-                ready = false,
-                muted = false,
-                voices = emptyList(),
-                selectedVoiceId = NavigationVoiceController.DEFAULT_VOICE_ID,
-            )
-        )
-    }
-    val voiceController = remember {
-        NavigationVoiceController(context.applicationContext) { state ->
-            mainHandler.post { voiceState = state }
-        }
-    }
-    var voiceMenuExpanded by remember { mutableStateOf(false) }
-
-    DisposableEffect(voiceController) {
-        onDispose { voiceController.shutdown() }
-    }
-
-    LaunchedEffect(Unit) {
-        voiceState = voiceController.state()
-    }
-
-    LaunchedEffect(routeUi.summary?.routeStartedAtMillis) {
-        routeUi.summary?.let { voiceController.onRouteStarted(it) }
-    }
-
-    LaunchedEffect(
-        routeUi.summary?.progressIndex,
-        routeUi.summary?.nextManeuver,
-        routeUi.summary?.nextManeuverDistanceMeters?.roundToInt(),
-        routeUi.summary?.arrived,
-    ) {
-        routeUi.summary?.let { voiceController.onProgress(it) }
-    }
-
-    LaunchedEffect(routeUi.rerouting) {
-        if (routeUi.rerouting) voiceController.announceRerouting()
-    }
 
     LaunchedEffect(routeUi.summary?.destinationName) {
         val destination = routeUi.summary?.destinationName?.trim().orEmpty()
