@@ -90,8 +90,8 @@ class NavigationVoiceController(
         maybeSpeak(route, force = true)
     }
 
-    fun onProgress(route: OpenRouteClient.RouteSummary) {
-        maybeSpeak(route, force = false)
+    fun onProgress(route: OpenRouteClient.RouteSummary, speedMps: Double = 0.0) {
+        maybeSpeak(route, force = false, speedMps = speedMps)
     }
 
     fun stopSpeaking() { tts.stop() }
@@ -101,7 +101,7 @@ class NavigationVoiceController(
         tts.shutdown()
     }
 
-    private fun maybeSpeak(route: OpenRouteClient.RouteSummary, force: Boolean) {
+    private fun maybeSpeak(route: OpenRouteClient.RouteSummary, force: Boolean, speedMps: Double = 0.0) {
         if (!ready || state().muted) return
 
         if (route.arrived) {
@@ -120,7 +120,7 @@ class NavigationVoiceController(
         }
         val maneuverKey = "$maneuver|$road|${upcoming?.lat}|${upcoming?.lon}"
         if (promptGate.shouldSpeak(maneuverKey, route.nextManeuverDistanceMeters,
-                SystemClock.elapsedRealtime(), force)) {
+                SystemClock.elapsedRealtime(), force, speedMps)) {
             val distance = spokenDistance(route.nextManeuverDistanceMeters)
             val roadPhrase = if (road.isNotBlank() && !maneuver.contains(road, ignoreCase = true)) {
                 " onto $road"

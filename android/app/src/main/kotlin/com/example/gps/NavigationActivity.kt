@@ -1,6 +1,15 @@
 package com.example.gps
 
 import com.example.gps.laneengine.NavigationFixQuality
+import android.animation.ValueAnimator
+import android.view.animation.LinearInterpolator
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
+import com.example.gps.laneengine.MapFollowInterpolation
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -99,6 +108,11 @@ class NavigationActivity : ComponentActivity() {
     private var map: MapLibreMap? = null
     private var mapStyleReady = false
     private var lastMapFixTimestamp: Long? = null
+    private var renderedGeometry: List<OpenRouteClient.RoutePoint>? = null
+    private var routeLayersInitialized = false
+    private var followAnimator: ValueAnimator? = null
+    private var renderedPosition: LatLng? = null
+    private var mapResumed = false
 
     private var uiState by mutableStateOf(GnssUiState())
     private var sessionActive by mutableStateOf(false)
@@ -165,6 +179,7 @@ class NavigationActivity : ComponentActivity() {
             readyMap.setStyle(MAP_STYLE_URI) { style ->
                 installNavigationLayers(style)
                 mapStyleReady = true
+                routeLayersInitialized = false
                 updateMapFromState(uiState, routeUi.summary, forceCamera = true)
             }
         }
@@ -224,9 +239,13 @@ class NavigationActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         mapView.onResume()
+        mapResumed = true
+        updateMapFromState(uiState, routeUi.summary, forceCamera = true)
     }
 
     override fun onPause() {
+        mapResumed = false
+        followAnimator?.cancel()
         mapView.onPause()
         super.onPause()
     }
@@ -512,52 +531,74 @@ class NavigationActivity : ComponentActivity() {
         if (!mapStyleReady) return
         val style = map?.style ?: return
 
-        val routeSource = style.getSource(ROUTE_SOURCE_ID) as? GeoJsonSource
-        routeSource?.setGeoJson(route?.geometry?.let(::routeFeatureCollection) ?: emptyFeatureCollection())
-
-        val destinationSource = style.getSource(DESTINATION_SOURCE_ID) as? GeoJsonSource
-        destinationSource?.setGeoJson(
-            route?.let { pointFeatureCollection(it.destinationLat, it.destinationLon) }
-                ?: emptyFeatureCollection()
-        )
-
-        val lat = state.latitude
-        val lon = state.longitude
-        val positionSource = style.getSource(POSITION_SOURCE_ID) as? GeoJsonSource
-        if (lat != null && lon != null && freshLocation(state)) {
-            positionSource?.setGeoJson(pointFeatureCollection(lat, lon))
-        } else {
-            positionSource?.setGeoJson(emptyFeatureCollection())
+        // Progress copies retain geometry identity. Upload only on plan/reroute/clear,
+        // not on every motion-sensor callback or position update.
+        if (!routeLayersInitialized || renderedGeometry !== route?.geometry) {
+            (style.getSource(ROUTE_SOURCE_ID) as? GeoJsonSource)?.setGeoJson(
+                route?.geometry?.let(::routeFeatureCollection) ?: emptyFeatureCollection())
+            (style.getSource(DESTINATION_SOURCE_ID) as? GeoJsonSource)?.setGeoJson(
+                route?.let { pointFeatureCollection(it.destinationLat, it.destinationLon) } ?: emptyFeatureCollection())
+            renderedGeometry = route?.geometry
+            routeLayersInitialized = true
         }
-
-        val fixTimestamp = state.lastUpdateMillis
-        val shouldMoveCamera = forceCamera || (fixTimestamp != null && fixTimestamp != lastMapFixTimestamp)
-        if (lat != null && lon != null && shouldMoveCamera && freshLocation(state)) {
-            lastMapFixTimestamp = fixTimestamp
-            val heading = (state.fusedHeadingDegrees ?: state.bearingDegrees ?: 0f).toDouble()
-            val moving = (state.speedMps ?: 0f) >= 1.5f
-            val driveFollow = sessionActive
-            val camera = CameraPosition.Builder()
-                .target(LatLng(lat, lon))
-                .zoom(
-                    when {
-                        moving -> 17.3
-                        driveFollow -> 16.9
-                        else -> 16.2
-                    }
-                )
-                .bearing(if (driveFollow || moving) heading else 0.0)
-                .tilt(
-                    when {
-                        driveFollow -> 58.0
-                        moving -> 48.0
-                        else -> 0.0
-                    }
-                )
-                .build()
-            // The marker and follow camera must use the same fix in the same frame.
-            // An eased camera trails the immediately updated marker at highway speed.
-            map?.moveCamera(CameraUpdateFactory.newCameraPosition(camera))
+        val positionSource = style.getSource(POSITION_SOURCE_ID) as? GeoJsonSource
+        if (!freshLocation(state)) {
+            followAnimator?.cancel()
+            renderedPosition = null
+            positionSource?.setGeoJson(emptyFeatureCollection())
+            return
+        }
+        if (!mapResumed) return
+        val timestamp = state.lastUpdateMillis ?: return
+        if (!forceCamera && timestamp == lastMapFixTimestamp) return
+        val previousTimestamp = lastMapFixTimestamp
+        lastMapFixTimestamp = timestamp
+        val target = LatLng(state.latitude!!, state.longitude!!)
+        val moving = (state.speedMps ?: 0f) >= 1.5f
+        val previousCamera = map?.cameraPosition ?: return
+        // While driving, GPS course follows the car rather than a loose phone's rotation.
+        val heading = if (moving) (state.bearingDegrees ?: state.fusedHeadingDegrees)?.toDouble()
+            ?: previousCamera.bearing else previousCamera.bearing
+        val destinationCamera = CameraPosition.Builder()
+            .target(target)
+            .zoom(if (moving) 17.3 else if (sessionActive) 16.9 else 16.2)
+            .bearing(if (sessionActive || moving) heading else 0.0)
+            .tilt(if (sessionActive) 58.0 else if (moving) 48.0 else 0.0)
+            .build()
+        followAnimator?.cancel()
+        val startPosition = renderedPosition
+        val gap = previousTimestamp?.let { timestamp - it } ?: Long.MAX_VALUE
+        val startTarget = previousCamera.target
+        if (forceCamera || startPosition == null || startTarget == null || gap !in 1..3_000 ||
+            startPosition.distanceTo(target) > 150.0) {
+            renderedPosition = target
+            positionSource?.setGeoJson(pointFeatureCollection(target.latitude, target.longitude))
+            map?.moveCamera(CameraUpdateFactory.newCameraPosition(destinationCamera))
+            return
+        }
+        // Interpolate observed fixes only: no invented future GPS or lane evidence.
+        // Marker and camera share a frame clock, avoiding marker/camera disagreement.
+        followAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = (gap * 0.75).toLong().coerceIn(150L, 650L)
+            interpolator = LinearInterpolator()
+            addUpdateListener { animation ->
+                val t = (animation.animatedValue as Float).toDouble()
+                val marker = LatLng(
+                    MapFollowInterpolation.linear(startPosition.latitude, target.latitude, t),
+                    MapFollowInterpolation.linear(startPosition.longitude, target.longitude, t))
+                renderedPosition = marker
+                positionSource?.setGeoJson(pointFeatureCollection(marker.latitude, marker.longitude))
+                val cameraTarget = LatLng(
+                    MapFollowInterpolation.linear(startTarget.latitude, target.latitude, t),
+                    MapFollowInterpolation.linear(startTarget.longitude, target.longitude, t))
+                map?.moveCamera(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder()
+                    .target(cameraTarget)
+                    .bearing(MapFollowInterpolation.bearing(previousCamera.bearing, destinationCamera.bearing, t))
+                    .zoom(MapFollowInterpolation.linear(previousCamera.zoom, destinationCamera.zoom, t))
+                    .tilt(MapFollowInterpolation.linear(previousCamera.tilt, destinationCamera.tilt, t))
+                    .build()))
+            }
+            start()
         }
     }
 
@@ -650,17 +691,29 @@ private fun NavigationScreen(
         voiceState = voiceController.state()
     }
 
-    LaunchedEffect(routeUi.summary?.routeStartedAtMillis) {
-        routeUi.summary?.let { voiceController.onRouteStarted(it) } ?: voiceController.stopSpeaking()
-    }
-
+    var announcedRoute by remember { mutableStateOf<Long?>(null) }
     LaunchedEffect(
+        routeUi.summary?.routeStartedAtMillis,
         routeUi.summary?.progressIndex,
         routeUi.summary?.nextManeuver,
         routeUi.summary?.nextManeuverDistanceMeters?.roundToInt(),
         routeUi.summary?.arrived,
+        voiceState.ready,
+        state.lastUpdateMillis,
+        sessionActive,
     ) {
-        routeUi.summary?.let { voiceController.onProgress(it) }
+        val route = routeUi.summary
+        if (route == null || !sessionActive) {
+            voiceController.stopSpeaking()
+            announcedRoute = null
+        } else if (voiceState.ready && state.lastUpdateMillis?.let {
+                NavigationFixQuality.isUsable(it, System.currentTimeMillis(), state.accuracyMeters?.toDouble())
+            } == true) {
+            if (announcedRoute != route.routeStartedAtMillis) {
+                voiceController.onRouteStarted(route)
+                announcedRoute = route.routeStartedAtMillis
+            } else voiceController.onProgress(route, (state.speedMps ?: 0f).toDouble())
+        }
     }
 
     LaunchedEffect(routeUi.rerouting) {
@@ -799,16 +852,52 @@ private fun CompactLaneOverlay(state: GnssUiState, laneNumber: Int?, laneCount: 
                 laneCount != null -> "$laneCount LANES · POSITION UNCERTAIN"
                 else -> "LANES UNKNOWN · scanning road"
             }, color = if (exact) NavGreen else NavAmber, fontWeight = FontWeight.ExtraBold, fontSize = 16.sp)
-            if (active && laneCount != null && !stale) {
-                Row(Modifier.fillMaxWidth().padding(top = 5.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    repeat(laneCount) { index ->
-                        val current = exact && index + 1 == laneNumber
-                        Surface(Modifier.weight(1f), color = if (current) NavGreen else NavCardStrong, shape = RoundedCornerShape(6.dp)) {
-                            Text("↑", modifier = Modifier.padding(vertical = 3.dp), textAlign = TextAlign.Center,
-                                color = if (current) NavBg else NavBlueSoft, fontSize = 25.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
+            if (active) {
+                LaneRoadDiagram(if (stale || settling) null else laneCount, if (exact) laneNumber else null)
+                Text(if (exact) "Green car = confirmed lane · target lane unavailable"
+                    else "Your lane is unconfirmed · target lane unavailable",
+                    color = NavMuted, fontSize = 10.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun LaneRoadDiagram(laneCount: Int?, currentLane: Int?) {
+    Canvas(Modifier.fillMaxWidth().height(100.dp).padding(vertical = 4.dp)) {
+        val nearLeft = size.width * 0.04f
+        val nearRight = size.width * 0.96f
+        val farLeft = size.width * 0.32f
+        val farRight = size.width * 0.68f
+        val top = size.height * 0.06f
+        val bottom = size.height
+        val road = Path().apply {
+            moveTo(nearLeft, bottom); lineTo(farLeft, top)
+            lineTo(farRight, top); lineTo(nearRight, bottom); close()
+        }
+        drawPath(road, Color(0xFF263344))
+        drawLine(Color.White, Offset(nearLeft, bottom), Offset(farLeft, top), 2.dp.toPx())
+        drawLine(Color.White, Offset(nearRight, bottom), Offset(farRight, top), 2.dp.toPx())
+        if (laneCount != null) {
+            for (boundary in 1 until laneCount) {
+                val fraction = boundary.toFloat() / laneCount
+                drawLine(Color(0xFFD9E2EF),
+                    Offset(nearLeft + (nearRight - nearLeft) * fraction, bottom),
+                    Offset(farLeft + (farRight - farLeft) * fraction, top),
+                    strokeWidth = 1.5.dp.toPx(),
+                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(9.dp.toPx(), 6.dp.toPx())))
+            }
+            if (currentLane != null && currentLane in 1..laneCount) {
+                val depth = 0.76f
+                val left = farLeft + (nearLeft - farLeft) * depth
+                val right = farRight + (nearRight - farRight) * depth
+                val x = left + (right - left) * (currentLane - 0.5f) / laneCount
+                val width = minOf(23.dp.toPx(), (right - left) / laneCount * 0.65f)
+                val y = top + (bottom - top) * depth
+                drawRoundRect(NavGreen, Offset(x - width / 2, y - 15.dp.toPx()),
+                    Size(width, 29.dp.toPx()), CornerRadius(4.dp.toPx()))
+                drawRoundRect(NavBg, Offset(x - width * 0.32f, y - 10.dp.toPx()),
+                    Size(width * 0.64f, 7.dp.toPx()), CornerRadius(2.dp.toPx()))
             }
         }
     }
