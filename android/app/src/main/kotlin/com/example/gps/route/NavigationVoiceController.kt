@@ -30,6 +30,12 @@ class NavigationVoiceController(
         val selectedVoiceId: String?,
     )
 
+    private enum class VoiceGender {
+        FEMALE,
+        MALE,
+        UNKNOWN,
+    }
+
     private val appContext = context.applicationContext
     private val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val tts = TextToSpeech(appContext, this)
@@ -119,8 +125,14 @@ class NavigationVoiceController(
             it.routeIndex >= route.progressIndex && it.label == maneuver && it.road == road
         }
         val maneuverKey = "$maneuver|$road|${upcoming?.lat}|${upcoming?.lon}"
-        if (promptGate.shouldSpeak(maneuverKey, route.nextManeuverDistanceMeters,
-                SystemClock.elapsedRealtime(), force, speedMps)) {
+        if (promptGate.shouldSpeak(
+                maneuverKey,
+                route.nextManeuverDistanceMeters,
+                SystemClock.elapsedRealtime(),
+                force,
+                speedMps,
+            )
+        ) {
             val distance = spokenDistance(route.nextManeuverDistanceMeters)
             val roadPhrase = if (road.isNotBlank() && !maneuver.contains(road, ignoreCase = true)) {
                 " onto $road"
@@ -132,7 +144,10 @@ class NavigationVoiceController(
                 distance.isNotBlank() -> "In $distance, $maneuver$roadPhrase."
                 else -> "$maneuver$roadPhrase."
             }
-            speak(instruction, "maneuver-${maneuverKey.hashCode()}-${if (route.nextManeuverDistanceMeters <= 55.0) 0 else 1}")
+            speak(
+                instruction,
+                "maneuver-${maneuverKey.hashCode()}-${if (route.nextManeuverDistanceMeters <= 55.0) 0 else 1}",
+            )
         }
     }
 
@@ -176,9 +191,26 @@ class NavigationVoiceController(
                 )
             )
 
+        // Android does not expose standardized gender metadata for TTS voices.
+        // When an engine includes gender in its voice name/features we use it;
+        // otherwise the voice remains neutral. Either way, cap each nationality
+        // at eight useful choices so the menu stays readable instead of dumping
+        // every engine variant onto the driver.
+        val curated = available
+            .groupBy { voiceGroupKey(it.locale) }
+            .entries
+            .sortedWith(
+                compareBy<Map.Entry<String, List<Voice>>>(
+                    { voicePriority(it.value.firstOrNull()?.locale) },
+                    { it.key },
+                )
+            )
+            .flatMap { curateLocaleVoices(it.value) }
+
+        val labelCounters = mutableMapOf<String, Int>()
         voiceOptions = buildList {
             add(VoiceOption(DEFAULT_VOICE_ID, "System default"))
-            available.forEach { voice ->
+            curated.forEach { voice ->
                 val locale = voice.locale
                 val languageLabel = when (locale.language.lowercase(Locale.US)) {
                     "pl" -> "Polish"
@@ -188,14 +220,63 @@ class NavigationVoiceController(
                     locale.country.ifBlank { "International" }
                 }
                 val source = if (voice.isNetworkConnectionRequired) "online" else "device"
+                val gender = inferGender(voice)
+                val bucket = "${voiceGroupKey(locale)}:${gender.name}"
+                val number = (labelCounters[bucket] ?: 0) + 1
+                labelCounters[bucket] = number
+                val voiceLabel = when (gender) {
+                    VoiceGender.FEMALE -> "Female $number"
+                    VoiceGender.MALE -> "Male $number"
+                    VoiceGender.UNKNOWN -> "Voice $number"
+                }
                 add(
                     VoiceOption(
                         voice.name,
-                        "$languageLabel · $country · $source",
+                        "$languageLabel · $country · $voiceLabel · $source",
                     )
                 )
             }
         }
+    }
+
+    private fun curateLocaleVoices(voices: List<Voice>): List<Voice> {
+        val sorted = voices.sortedWith(
+            compareBy<Voice>(
+                { it.isNetworkConnectionRequired },
+                { it.name },
+            )
+        )
+        val female = sorted.filter { inferGender(it) == VoiceGender.FEMALE }.take(MAX_PER_GENDER)
+        val male = sorted.filter { inferGender(it) == VoiceGender.MALE }.take(MAX_PER_GENDER)
+
+        val selected = LinkedHashSet<Voice>()
+        repeat(MAX_PER_GENDER) { index ->
+            female.getOrNull(index)?.let(selected::add)
+            male.getOrNull(index)?.let(selected::add)
+        }
+        sorted.forEach { voice ->
+            if (selected.size < MAX_PER_LOCALE) selected.add(voice)
+        }
+        return selected.take(MAX_PER_LOCALE)
+    }
+
+    private fun inferGender(voice: Voice): VoiceGender {
+        val signature = buildString {
+            append(voice.name)
+            append(' ')
+            append(voice.features.orEmpty().joinToString(" "))
+        }.lowercase(Locale.US)
+
+        return when {
+            FEMALE_HINT.containsMatchIn(signature) -> VoiceGender.FEMALE
+            MALE_HINT.containsMatchIn(signature) -> VoiceGender.MALE
+            else -> VoiceGender.UNKNOWN
+        }
+    }
+
+    private fun voiceGroupKey(locale: Locale?): String {
+        if (locale == null) return "zz"
+        return "${locale.language.lowercase(Locale.US)}-${locale.country.uppercase(Locale.US)}"
     }
 
     private fun voicePriority(locale: Locale?): Int {
@@ -255,7 +336,15 @@ class NavigationVoiceController(
         private const val PREFS_NAME = "lane_gps_voice"
         private const val KEY_MUTED = "muted"
         private const val KEY_VOICE_ID = "voice_id"
+        private const val MAX_PER_GENDER = 4
+        private const val MAX_PER_LOCALE = 8
         private val HIDDEN_COUNTRIES = setOf("IN", "NG")
         private val SUPPORTED_VOICE_LANGUAGES = setOf("en", "pl")
+        private val FEMALE_HINT = Regex(
+            "(^|[^a-z])female([^a-z]|$)|(^|[^a-z])woman([^a-z]|$)|(^|[^a-z])girl([^a-z]|$)",
+        )
+        private val MALE_HINT = Regex(
+            "(^|[^a-z])male([^a-z]|$)|(^|[^a-z])man([^a-z]|$)|(^|[^a-z])boy([^a-z]|$)",
+        )
     }
 }
