@@ -10,6 +10,7 @@
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
 
     <application
+        android:name=".LaneGpsApplication"
         android:allowBackup="true"
         android:label="Lane GPS"
         android:theme="@style/Theme.LaneGps"
@@ -46,6 +47,6 @@
             android:name=".location.DriveTrackingService"
             android:exported="false"
             android:foregroundServiceType="location"
-            android:stopWithTask="false"/>
+            android:stopWithTask="true"/>
     </application>
 </manifest>
