@@ -21,6 +21,7 @@ class NavigationVoiceController(
     data class VoiceOption(
         val id: String,
         val label: String,
+        val group: String = "Defaults & effects",
     )
 
     data class State(
@@ -28,13 +29,8 @@ class NavigationVoiceController(
         val muted: Boolean,
         val voices: List<VoiceOption>,
         val selectedVoiceId: String?,
+        val mode: VoiceMode = VoiceMode.NORMAL,
     )
-
-    private enum class VoiceGender {
-        FEMALE,
-        MALE,
-        UNKNOWN,
-    }
 
     private val appContext = context.applicationContext
     private val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -57,22 +53,36 @@ class NavigationVoiceController(
 
     fun state(): State = State(
         ready = ready,
-        muted = prefs.getBoolean(KEY_MUTED, false),
+        muted = voiceMode() == VoiceMode.MUTE,
+        mode = voiceMode(),
         voices = voiceOptions,
         selectedVoiceId = prefs.getString(KEY_VOICE_ID, DEFAULT_VOICE_ID),
     )
 
-    fun setMuted(muted: Boolean) {
-        prefs.edit().putBoolean(KEY_MUTED, muted).apply()
-        if (muted) tts.stop()
+    private fun voiceMode(): VoiceMode = runCatching {
+        VoiceMode.valueOf(prefs.getString("voice_mode", null)
+            ?: if (prefs.getBoolean(KEY_MUTED, false)) "MUTE" else "NORMAL")
+    }.getOrDefault(VoiceMode.NORMAL)
+
+    fun setMode(mode: VoiceMode) {
+        prefs.edit().putString("voice_mode", mode.name).putBoolean(KEY_MUTED, mode == VoiceMode.MUTE).apply()
+        tts.stop()
         publishState()
     }
+
+    fun cycleMode() = setMode(when (voiceMode()) {
+        VoiceMode.NORMAL -> VoiceMode.ALERTS_ONLY
+        VoiceMode.ALERTS_ONLY -> VoiceMode.MUTE
+        VoiceMode.MUTE -> VoiceMode.NORMAL
+    })
 
     fun selectVoice(id: String?) {
         val selected = id?.takeIf { it.isNotBlank() } ?: DEFAULT_VOICE_ID
         prefs.edit().putString(KEY_VOICE_ID, selected).apply()
         if (ready) {
-            if (selected == DEFAULT_VOICE_ID) {
+            tts.setPitch(if (selected == CINEMATIC_VOICE_ID) 0.85f else 1f)
+            tts.setSpeechRate(if (selected == CINEMATIC_VOICE_ID) 0.92f else 1f)
+            if (selected == DEFAULT_VOICE_ID || selected == CINEMATIC_VOICE_ID) {
                 tts.language = Locale.US
                 tts.defaultVoice?.let { tts.voice = it }
             } else {
@@ -80,6 +90,10 @@ class NavigationVoiceController(
             }
         }
         publishState()
+    }
+
+    fun previewSelectedVoice() {
+        speak("This is your navigation voice. In one mile, take the next exit.", "voice-preview")
     }
 
     fun resetRoute() {
@@ -113,11 +127,13 @@ class NavigationVoiceController(
         if (route.arrived) {
             if (!arrivalSpoken) {
                 arrivalSpoken = true
-                speak("You have arrived at your destination.", "arrival")
+                speak(route.destinationSide?.let { "Your destination is on the $it." }
+                    ?: "You have arrived at your destination.", "arrival")
             }
             return
         }
 
+        if (voiceMode() != VoiceMode.NORMAL) return
         val maneuver = route.nextManeuver.trim()
         if (maneuver.isBlank()) return
         val road = route.nextRoad.trim()
@@ -125,14 +141,8 @@ class NavigationVoiceController(
             it.routeIndex >= route.progressIndex && it.label == maneuver && it.road == road
         }
         val maneuverKey = "$maneuver|$road|${upcoming?.lat}|${upcoming?.lon}"
-        if (promptGate.shouldSpeak(
-                maneuverKey,
-                route.nextManeuverDistanceMeters,
-                SystemClock.elapsedRealtime(),
-                force,
-                speedMps,
-            )
-        ) {
+        if (promptGate.shouldSpeak(maneuverKey, route.nextManeuverDistanceMeters,
+                SystemClock.elapsedRealtime(), force, speedMps)) {
             val distance = spokenDistance(route.nextManeuverDistanceMeters)
             val roadPhrase = if (road.isNotBlank() && !maneuver.contains(road, ignoreCase = true)) {
                 " onto $road"
@@ -144,10 +154,7 @@ class NavigationVoiceController(
                 distance.isNotBlank() -> "In $distance, $maneuver$roadPhrase."
                 else -> "$maneuver$roadPhrase."
             }
-            speak(
-                instruction,
-                "maneuver-${maneuverKey.hashCode()}-${if (route.nextManeuverDistanceMeters <= 55.0) 0 else 1}",
-            )
+            speak(instruction, "maneuver-${maneuverKey.hashCode()}-${if (route.nextManeuverDistanceMeters <= 55.0) 0 else 1}")
         }
     }
 
@@ -169,7 +176,7 @@ class NavigationVoiceController(
     }
 
     private fun speak(text: String, utteranceId: String) {
-        if (!ready || state().muted) return
+        if (!ready || !voiceMode().allows(utteranceId)) return
         val result = tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
         NavigationVoiceTelemetryRuntime.publishSpeakAttempt(text, result)
     }
@@ -180,7 +187,7 @@ class NavigationVoiceController(
                 val locale = voice.locale ?: return@filter false
                 val country = locale.country.uppercase(Locale.US)
                 val language = locale.language.lowercase(Locale.US)
-                country !in HIDDEN_COUNTRIES && language in SUPPORTED_VOICE_LANGUAGES
+                country !in HIDDEN_COUNTRIES && language.isNotBlank()
             }
             .sortedWith(
                 compareBy<Voice>(
@@ -191,92 +198,22 @@ class NavigationVoiceController(
                 )
             )
 
-        // Android does not expose standardized gender metadata for TTS voices.
-        // When an engine includes gender in its voice name/features we use it;
-        // otherwise the voice remains neutral. Either way, cap each nationality
-        // at eight useful choices so the menu stays readable instead of dumping
-        // every engine variant onto the driver.
-        val curated = available
-            .groupBy { voiceGroupKey(it.locale) }
-            .entries
-            .sortedWith(
-                compareBy<Map.Entry<String, List<Voice>>>(
-                    { voicePriority(it.value.firstOrNull()?.locale) },
-                    { it.key },
-                )
-            )
-            .flatMap { curateLocaleVoices(it.value) }
-
-        val labelCounters = mutableMapOf<String, Int>()
         voiceOptions = buildList {
             add(VoiceOption(DEFAULT_VOICE_ID, "System default"))
-            curated.forEach { voice ->
-                val locale = voice.locale
-                val languageLabel = when (locale.language.lowercase(Locale.US)) {
-                    "pl" -> "Polish"
-                    else -> "English"
+            add(VoiceOption(CINEMATIC_VOICE_ID, "Cinematic narrator · voice effect"))
+            val selected = prefs.getString(KEY_VOICE_ID, DEFAULT_VOICE_ID)
+            available.groupBy { it.locale.language to it.locale.country }.values.forEach { group ->
+                val chosen = VoiceShortlist.select(group, { it.name }, selected)
+                chosen.forEachIndexed { index, voice ->
+                    val locale = voice.locale
+                    val country = locale.getDisplayCountry(Locale.US).ifBlank { "International" }
+                    val language = locale.getDisplayLanguage(Locale.US)
+                    val source = if (voice.isNetworkConnectionRequired) "online" else "device"
+                    val gender = VoiceShortlist.gender(voice.name)
+                    add(VoiceOption(voice.name, "$gender ${index + 1} · $source", "$language · $country"))
                 }
-                val country = locale.getDisplayCountry(Locale.US).ifBlank {
-                    locale.country.ifBlank { "International" }
-                }
-                val source = if (voice.isNetworkConnectionRequired) "online" else "device"
-                val gender = inferGender(voice)
-                val bucket = "${voiceGroupKey(locale)}:${gender.name}"
-                val number = (labelCounters[bucket] ?: 0) + 1
-                labelCounters[bucket] = number
-                val voiceLabel = when (gender) {
-                    VoiceGender.FEMALE -> "Female $number"
-                    VoiceGender.MALE -> "Male $number"
-                    VoiceGender.UNKNOWN -> "Voice $number"
-                }
-                add(
-                    VoiceOption(
-                        voice.name,
-                        "$languageLabel · $country · $voiceLabel · $source",
-                    )
-                )
             }
         }
-    }
-
-    private fun curateLocaleVoices(voices: List<Voice>): List<Voice> {
-        val sorted = voices.sortedWith(
-            compareBy<Voice>(
-                { it.isNetworkConnectionRequired },
-                { it.name },
-            )
-        )
-        val female = sorted.filter { inferGender(it) == VoiceGender.FEMALE }.take(MAX_PER_GENDER)
-        val male = sorted.filter { inferGender(it) == VoiceGender.MALE }.take(MAX_PER_GENDER)
-
-        val selected = LinkedHashSet<Voice>()
-        repeat(MAX_PER_GENDER) { index ->
-            female.getOrNull(index)?.let(selected::add)
-            male.getOrNull(index)?.let(selected::add)
-        }
-        sorted.forEach { voice ->
-            if (selected.size < MAX_PER_LOCALE) selected.add(voice)
-        }
-        return selected.take(MAX_PER_LOCALE)
-    }
-
-    private fun inferGender(voice: Voice): VoiceGender {
-        val signature = buildString {
-            append(voice.name)
-            append(' ')
-            append(voice.features.orEmpty().joinToString(" "))
-        }.lowercase(Locale.US)
-
-        return when {
-            FEMALE_HINT.containsMatchIn(signature) -> VoiceGender.FEMALE
-            MALE_HINT.containsMatchIn(signature) -> VoiceGender.MALE
-            else -> VoiceGender.UNKNOWN
-        }
-    }
-
-    private fun voiceGroupKey(locale: Locale?): String {
-        if (locale == null) return "zz"
-        return "${locale.language.lowercase(Locale.US)}-${locale.country.uppercase(Locale.US)}"
     }
 
     private fun voicePriority(locale: Locale?): Int {
@@ -298,12 +235,13 @@ class NavigationVoiceController(
 
     private fun applySavedVoice() {
         val id = prefs.getString(KEY_VOICE_ID, DEFAULT_VOICE_ID) ?: DEFAULT_VOICE_ID
-        if (id == DEFAULT_VOICE_ID) {
+        if (id == DEFAULT_VOICE_ID || id == CINEMATIC_VOICE_ID) {
+            tts.setPitch(if (id == CINEMATIC_VOICE_ID) 0.85f else 1f)
+            tts.setSpeechRate(if (id == CINEMATIC_VOICE_ID) 0.92f else 1f)
             tts.defaultVoice?.let { tts.voice = it }
             return
         }
-        val optionStillVisible = voiceOptions.any { it.id == id }
-        val saved = if (optionStillVisible) findVoice(id) else null
+        val saved = findVoice(id)?.takeIf { it.locale.country.uppercase(Locale.US) !in HIDDEN_COUNTRIES }
         if (saved != null) {
             tts.voice = saved
         } else {
@@ -336,15 +274,7 @@ class NavigationVoiceController(
         private const val PREFS_NAME = "lane_gps_voice"
         private const val KEY_MUTED = "muted"
         private const val KEY_VOICE_ID = "voice_id"
-        private const val MAX_PER_GENDER = 4
-        private const val MAX_PER_LOCALE = 8
         private val HIDDEN_COUNTRIES = setOf("IN", "NG")
-        private val SUPPORTED_VOICE_LANGUAGES = setOf("en", "pl")
-        private val FEMALE_HINT = Regex(
-            "(^|[^a-z])female([^a-z]|$)|(^|[^a-z])woman([^a-z]|$)|(^|[^a-z])girl([^a-z]|$)",
-        )
-        private val MALE_HINT = Regex(
-            "(^|[^a-z])male([^a-z]|$)|(^|[^a-z])man([^a-z]|$)|(^|[^a-z])boy([^a-z]|$)",
-        )
+        const val CINEMATIC_VOICE_ID = "__cinematic_effect__"
     }
 }

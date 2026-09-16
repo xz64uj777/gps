@@ -2,6 +2,20 @@ package com.example.gps.laneengine
 
 /** Preserve OSRM maneuver type before applying its direction modifier. */
 object ManeuverInstruction {
+    fun symbol(instruction: String): String {
+        val label = instruction.lowercase(java.util.Locale.ROOT)
+        return when {
+            "arriv" in label || "destination" in label -> "⚑"
+            "u-turn" in label -> "↶"
+            "roundabout" in label -> "◎"
+            "slight left" in label || ("left" in label && ("fork" in label || "merge" in label || "ramp" in label || "exit" in label)) -> "↖"
+            "slight right" in label || ("right" in label && ("fork" in label || "merge" in label || "ramp" in label || "exit" in label)) -> "↗"
+            "left" in label -> "↰"
+            "right" in label -> "↱"
+            else -> "↑"
+        }
+    }
+
     fun text(type: String, modifier: String, exits: String = ""): String {
         val side = when (modifier) {
             "slight left", "left", "sharp left" -> "left"

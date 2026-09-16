@@ -32,6 +32,7 @@ internal object RouteCheckpoint {
     fun encode(r: OpenRouteClient.RouteSummary): String = JSONObject().apply {
         put("version", 1)
         put("destinationName", r.destinationName)
+        put("destinationSide", r.destinationSide ?: "")
         put("destinationLat", r.destinationLat)
         put("destinationLon", r.destinationLon)
         put("distanceMeters", r.distanceMeters)
@@ -76,6 +77,7 @@ internal object RouteCheckpoint {
         require(j.getInt("progressIndex") in geometry.indices)
         require(maneuvers.all { it.routeIndex in geometry.indices })
         return OpenRouteClient.RouteSummary(
+            destinationSide = j.optString("destinationSide", "").takeIf { it == "left" || it == "right" },
             destinationName = j.getString("destinationName"), destinationLat = j.getDouble("destinationLat"),
             destinationLon = j.getDouble("destinationLon"), distanceMeters = j.getDouble("distanceMeters"),
             durationSeconds = j.getDouble("durationSeconds"), nextManeuver = j.getString("nextManeuver"),

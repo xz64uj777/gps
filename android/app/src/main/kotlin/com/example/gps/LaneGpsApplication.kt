@@ -25,47 +25,12 @@ class LaneGpsApplication : Application(), Application.ActivityLifecycleCallbacks
         registerActivityLifecycleCallbacks(this)
     }
 
-    override fun onActivityPreCreated(activity: Activity, savedInstanceState: Bundle?) {
-        if (activity !is NavigationActivity) return
-
-        // A foreground location service normally updates at least once every
-        // few seconds. If persisted state still says ACTIVE but its last fix is
-        // old, treat it as an unclean task/service shutdown rather than
-        // resuming one enormous fake drive.
-        val store = DriveSessionStore(activity)
-        if (store.isActive()) {
-            val lastUpdate = store.load().lastUpdateMillis
-            val stale = lastUpdate == null ||
-                System.currentTimeMillis() - lastUpdate > STALE_ACTIVE_SESSION_MS
-            if (stale) {
-                store.setActive(false)
-                ActiveNavigationStore(activity).clear()
-            }
-        }
-    }
-
-    override fun onActivityResumed(activity: Activity) {
-        if (activity !is NavigationActivity) return
-        if (!hasDrivePermissions(activity)) return
-
-        val store = DriveSessionStore(activity)
-        if (store.isActive()) return
-
-        // Free Drive is the default state now. Once permissions have been
-        // granted, opening LaneGPS starts live GNSS/lane sensing automatically.
-        val intent = Intent(activity, DriveTrackingService::class.java)
-            .setAction(DriveTrackingService.ACTION_START)
-            .putExtra(DriveTrackingService.EXTRA_RESET, true)
-        ContextCompat.startForegroundService(activity, intent)
-    }
-
     override fun onActivityDestroyed(activity: Activity) {
         if (activity !is NavigationActivity) return
         if (!activity.isFinishing || activity.isChangingConfigurations) return
 
         // Back/finish should finalize the session the same way the explicit
-        // STOP button does. Task removal is also covered by stopWithTask=true
-        // in the manifest.
+        // STOP button does. Task removal is finalized by the service callback.
         if (DriveSessionStore(activity).isActive()) {
             activity.startService(
                 Intent(activity, DriveTrackingService::class.java)
@@ -74,27 +39,11 @@ class LaneGpsApplication : Application(), Application.ActivityLifecycleCallbacks
         }
     }
 
-    private fun hasDrivePermissions(activity: Activity): Boolean {
-        val locationGranted = ContextCompat.checkSelfPermission(
-            activity,
-            Manifest.permission.ACCESS_FINE_LOCATION,
-        ) == PackageManager.PERMISSION_GRANTED
-        if (!locationGranted) return false
-
-        return Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
-            ContextCompat.checkSelfPermission(
-                activity,
-                Manifest.permission.POST_NOTIFICATIONS,
-            ) == PackageManager.PERMISSION_GRANTED
-    }
-
     override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
     override fun onActivityStarted(activity: Activity) = Unit
     override fun onActivityPaused(activity: Activity) = Unit
     override fun onActivityStopped(activity: Activity) = Unit
     override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
 
-    private companion object {
-        const val STALE_ACTIVE_SESSION_MS = 5_000L
-    }
+    override fun onActivityResumed(activity: Activity) = Unit
 }

@@ -47,6 +47,6 @@
             android:name=".location.DriveTrackingService"
             android:exported="false"
             android:foregroundServiceType="location"
-            android:stopWithTask="true"/>
+            android:stopWithTask="false"/>
     </application>
 </manifest>

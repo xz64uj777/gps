@@ -63,6 +63,7 @@ class OpenRouteClient {
         val offRouteDistanceMeters: Double = 0.0,
         val arrived: Boolean = false,
         val source: String = "OSM · OSRM",
+        val destinationSide: String? = null,
     )
 
     fun plan(
@@ -189,7 +190,7 @@ class OpenRouteClient {
             distanceMeters = remaining,
             durationSeconds = remainingSeconds,
             nextManeuver = when {
-                arrived -> "Arrived"
+                arrived -> route.destinationSide?.let { "Destination on the $it" } ?: "Arrived"
                 next != null -> next.label
                 else -> "Continue to destination"
             },
@@ -250,6 +251,7 @@ class OpenRouteClient {
         val legs = route.getJSONArray("legs")
         if (legs.length() == 0) error("Route contained no legs")
 
+        var destinationSide: String? = null
         val maneuvers = mutableListOf<RouteManeuver>()
         for (legIndex in 0 until legs.length()) {
             val steps = legs.getJSONObject(legIndex).getJSONArray("steps")
@@ -265,7 +267,8 @@ class OpenRouteClient {
                     lon = location.optDouble(0),
                 )
                 val label = if (type == "arrive") {
-                    "Arrive at destination"
+                    destinationSide = maneuver.optString("modifier", "").takeIf { it == "left" || it == "right" }
+                    destinationSide?.let { "Destination on the $it" } ?: "Arrive at destination"
                 } else {
                     ManeuverInstruction.text(type, maneuver.optString("modifier", ""), step.optString("exits", ""))
                 }
@@ -287,6 +290,7 @@ class OpenRouteClient {
 
         val initial = RouteSummary(
             destinationName = place.name,
+            destinationSide = destinationSide,
             destinationLat = place.lat,
             destinationLon = place.lon,
             distanceMeters = totalDistance,

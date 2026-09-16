@@ -28,6 +28,8 @@ object DriveSessionRuntime {
         latestState?.let { listener(driverFacing(it)) }
     }
 
+    fun hasVisibleScreen(): Boolean = listeners.isNotEmpty()
+
     fun removeListener(listener: (GnssUiState) -> Unit) {
         listeners.remove(listener)
     }

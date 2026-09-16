@@ -47,6 +47,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import com.example.gps.location.DriveSessionRuntime
 import com.example.gps.location.DriveSessionStore
 import com.example.gps.location.DriveTrackingService
@@ -113,6 +115,7 @@ class NavigationActivity : ComponentActivity() {
     private var followAnimator: ValueAnimator? = null
     private var renderedPosition: LatLng? = null
     private var mapResumed = false
+    private var followingLocation by mutableStateOf(true)
 
     private var uiState by mutableStateOf(GnssUiState())
     private var sessionActive by mutableStateOf(false)
@@ -120,6 +123,8 @@ class NavigationActivity : ComponentActivity() {
     private var routeUi by mutableStateOf(NavigationRouteUi())
 
     private var pendingStart = false
+    private var liveViewStoppedByUser = false
+    private var locationPromptedThisVisit = false
     private var pendingRouteQuery: String? = null
     private var lastProgressFixTimestamp: Long? = null
     private var offRouteFixStreak = 0
@@ -152,6 +157,9 @@ class NavigationActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        followingLocation = savedInstanceState?.getBoolean("following_location", true) ?: true
+        liveViewStoppedByUser = savedInstanceState?.getBoolean("live_view_stopped", false) ?: false
+        locationPromptedThisVisit = savedInstanceState?.getBoolean("location_prompted", false) ?: false
         navigationStore = ActiveNavigationStore(this)
         store = DriveSessionStore(this)
         uiState = DriveSessionRuntime.latest() ?: store.load()
@@ -165,9 +173,21 @@ class NavigationActivity : ComponentActivity() {
         MapLibre.getInstance(this)
         mapView = MapView(this)
         mapView.onCreate(savedInstanceState)
+        ViewCompat.setOnApplyWindowInsetsListener(mapView) { _, insets ->
+            positionMapControls(insets)
+            insets
+        }
         mapView.getMapAsync { readyMap ->
             map = readyMap
+            readyMap.addOnCameraMoveStartedListener { reason ->
+                if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
+                    followingLocation = false
+                    followAnimator?.cancel()
+                }
+            }
             readyMap.uiSettings.isCompassEnabled = true
+            positionMapControls(ViewCompat.getRootWindowInsets(mapView))
+            ViewCompat.requestApplyInsets(mapView)
             readyMap.uiSettings.isLogoEnabled = true
             readyMap.uiSettings.isAttributionEnabled = true
             readyMap.uiSettings.isRotateGesturesEnabled = true
@@ -196,6 +216,11 @@ class NavigationActivity : ComponentActivity() {
                 NavigationScreen(
                     state = uiState,
                     sessionActive = sessionActive,
+                    followingLocation = followingLocation,
+                    onRecenter = {
+                        followingLocation = true
+                        updateMapFromState(uiState, routeUi.summary, forceCamera = true)
+                    },
                     query = routeQuery,
                     routeUi = routeUi,
                     mapView = mapView,
@@ -218,8 +243,13 @@ class NavigationActivity : ComponentActivity() {
                             startDrive()
                         }
                     },
-                    onStopDrive = { stopDrive() },
-                    onEnableLocation = { requestDrivePermissions(false) },
+                    onStartLiveView = {
+                        // Live view is independent of any text left in destination search.
+                        routeQuery = ""
+                        startDrive()
+                    },
+                    onStopDrive = { liveViewStoppedByUser = true; stopDrive() },
+                    onEnableLocation = { requestDrivePermissions(true) },
                     onOpenDiagnostics = { startActivity(Intent(this, MainActivity::class.java)) },
                 )
             }
@@ -234,6 +264,16 @@ class NavigationActivity : ComponentActivity() {
         uiState = DriveSessionRuntime.latest() ?: store.load()
         sessionActive = store.isActive()
         DriveSessionRuntime.addListener(runtimeListener)
+        if (!sessionActive && !liveViewStoppedByUser && !pendingStart) {
+            routeQuery = ""
+            if (hasFineLocationPermission()) {
+                // Notification permission is optional for the visible live map.
+                startDriveInternal()
+            } else if (!locationPromptedThisVisit) {
+                locationPromptedThisVisit = true
+                requestDrivePermissions(true)
+            }
+        }
     }
 
     override fun onResume() {
@@ -251,10 +291,30 @@ class NavigationActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        // Standalone live view belongs to this visible screen. A saved route keeps
+        // its existing background/recovery behavior; folding must not end a session.
+        if (!isChangingConfigurations && sessionActive && routeUi.summary == null &&
+            pendingRouteQuery == null && !routeUi.planning && !routeUi.waitingForGps) {
+            stopDrive()
+        }
         if (store.isActive()) routeUi.summary?.let { navigationStore.save(it) }
         DriveSessionRuntime.removeListener(runtimeListener)
         mapView.onStop()
+        if (!isChangingConfigurations) liveViewStoppedByUser = false
         super.onStop()
+    }
+
+    private fun positionMapControls(insets: WindowInsetsCompat?) {
+        val safe = insets?.getInsets(
+            WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout(),
+        )
+        val gap = (12 * resources.displayMetrics.density).toInt()
+        map?.uiSettings?.setCompassMargins(
+            (safe?.left ?: 0) + gap,
+            (safe?.top ?: 0) + gap,
+            (safe?.right ?: 0) + gap,
+            (safe?.bottom ?: 0) + gap,
+        )
     }
 
     override fun onLowMemory() {
@@ -264,6 +324,9 @@ class NavigationActivity : ComponentActivity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
+        outState.putBoolean("following_location", followingLocation)
+        outState.putBoolean("live_view_stopped", liveViewStoppedByUser)
+        outState.putBoolean("location_prompted", locationPromptedThisVisit)
         mapView.onSaveInstanceState(outState)
     }
 
@@ -277,7 +340,7 @@ class NavigationActivity : ComponentActivity() {
     private fun requestRoutePlan(queryOverride: String? = null) {
         val query = (queryOverride ?: routeQuery).trim()
         if (query.isBlank()) {
-            routeUi = routeUi.copy(error = "Enter a destination, or leave it blank for Free Drive.")
+            routeUi = routeUi.copy(error = "Enter a destination, or leave it blank for Live View.")
             return
         }
         routeQuery = query
@@ -425,6 +488,7 @@ class NavigationActivity : ComponentActivity() {
     }
 
     private fun startDriveInternal() {
+        liveViewStoppedByUser = false
         val destination = routeQuery.trim()
         if (destination.isBlank()) {
             clearRouteForFreeDrive()
@@ -438,7 +502,7 @@ class NavigationActivity : ComponentActivity() {
         }
 
         sessionActive = true
-        uiState = GnssUiState(message = if (destination.isBlank()) "Starting Free Drive…" else "Starting navigation…")
+        uiState = GnssUiState(message = if (destination.isBlank()) "Starting Live View…" else "Starting navigation…")
         lastProgressFixTimestamp = null
         lastMapFixTimestamp = null
         val intent = Intent(this, DriveTrackingService::class.java)
@@ -554,6 +618,14 @@ class NavigationActivity : ComponentActivity() {
         val previousTimestamp = lastMapFixTimestamp
         lastMapFixTimestamp = timestamp
         val target = LatLng(state.latitude!!, state.longitude!!)
+        // Browsing is sticky: fresh fixes, route changes and resume can update
+        // overlays and the position marker, but only Recenter re-enables follow.
+        if (!followingLocation) {
+            followAnimator?.cancel()
+            renderedPosition = target
+            positionSource?.setGeoJson(pointFeatureCollection(target.latitude, target.longitude))
+            return
+        }
         val moving = (state.speedMps ?: 0f) >= 1.5f
         val previousCamera = map?.cameraPosition ?: return
         // While driving, GPS course follows the car rather than a loose phone's rotation.
@@ -588,6 +660,7 @@ class NavigationActivity : ComponentActivity() {
                     MapFollowInterpolation.linear(startPosition.longitude, target.longitude, t))
                 renderedPosition = marker
                 positionSource?.setGeoJson(pointFeatureCollection(marker.latitude, marker.longitude))
+                if (!followingLocation) return@addUpdateListener
                 val cameraTarget = LatLng(
                     MapFollowInterpolation.linear(startTarget.latitude, target.latitude, t),
                     MapFollowInterpolation.linear(startTarget.longitude, target.longitude, t))
@@ -653,6 +726,8 @@ class NavigationActivity : ComponentActivity() {
 private fun NavigationScreen(
     state: GnssUiState,
     sessionActive: Boolean,
+    followingLocation: Boolean,
+    onRecenter: () -> Unit,
     query: String,
     routeUi: NavigationRouteUi,
     mapView: MapView,
@@ -660,6 +735,7 @@ private fun NavigationScreen(
     onQuickRoute: (String) -> Unit,
     onClearRoute: () -> Unit,
     onPrimaryAction: () -> Unit,
+    onStartLiveView: () -> Unit,
     onStopDrive: () -> Unit,
     onEnableLocation: () -> Unit,
     onOpenDiagnostics: () -> Unit,
@@ -752,8 +828,8 @@ private fun NavigationScreen(
         val wide = maxWidth >= 600.dp
         AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize())
         Column(
-            Modifier.align(Alignment.TopStart).statusBarsPadding()
-                .padding(8.dp).widthIn(max = if (wide) 390.dp else 540.dp).fillMaxWidth(),
+            Modifier.align(Alignment.TopStart).windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
+                .padding(start = 8.dp, top = 8.dp, end = 64.dp, bottom = 8.dp).widthIn(max = if (wide) 390.dp else 540.dp).fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Surface(color = NavCardStrong, shape = RoundedCornerShape(16.dp)) {
@@ -766,12 +842,20 @@ private fun NavigationScreen(
                             routeUi.waitingForGps -> "WAITING FOR ACCURATE GPS…"
                             route?.arrived == true -> "ARRIVED"
                             route != null -> "NAVIGATION"
-                            sessionActive -> "FREE DRIVE"
+                            sessionActive -> "LIVE VIEW"
                             else -> "LaneGPS · READY"
                         }, color = if (gpsStale) NavRed else NavBlueSoft,
                         fontWeight = FontWeight.Bold, fontSize = 12.sp,
                     )
-                    Text(route?.nextManeuver ?: if (sessionActive) "Live road follow" else "Choose destination or Free Drive",
+                    route?.let {
+                        Text(com.example.gps.laneengine.ManeuverInstruction.symbol(it.nextManeuver),
+                            color = Color.White, fontSize = 36.sp, fontWeight = FontWeight.Bold)
+                        if (!it.arrived && it.distanceMeters <= 500.0) {
+                            Text(it.destinationSide?.let { side -> "Destination on the $side" }
+                                ?: "Destination side unavailable", color = NavBlueSoft, fontSize = 13.sp)
+                        }
+                    }
+                    Text(route?.nextManeuver ?: if (sessionActive) "Live road follow" else "Live view · no destination needed",
                         color = Color.White, fontSize = 21.sp, fontWeight = FontWeight.Bold, maxLines = 2)
                     route?.let {
                         Text("${formatNavDistance(it.nextManeuverDistanceMeters)} · ${it.nextRoad}",
@@ -788,6 +872,11 @@ private fun NavigationScreen(
             color = NavCard, shape = RoundedCornerShape(16.dp),
         ) {
             Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (!followingLocation) {
+                    Button(onClick = onRecenter, modifier = Modifier.fillMaxWidth()) {
+                        Text("RECENTER · FOLLOW ME", fontWeight = FontWeight.Bold)
+                    }
+                }
                 Text(
                     "${if (gpsStale || !sessionActive) "—" else ((state.speedMps ?: 0f) * 2.23694f).roundToInt().toString()} mph" +
                         (route?.let { " · ${formatNavDistance(it.distanceMeters)} · ${formatNavDuration(it.durationSeconds)}" } ?: ""),
@@ -797,18 +886,18 @@ private fun NavigationScreen(
                     OutlinedButton(onClick = { showDestination = true }, modifier = Modifier.weight(1f)) {
                         Text("Search / options", maxLines = 1)
                     }
-                    OutlinedButton(onClick = { voiceController.setMuted(!voiceState.muted) }) {
-                        Text(if (voiceState.muted) "UNMUTE" else "MUTE")
+                    OutlinedButton(onClick = { voiceController.cycleMode() }) {
+                        Text(voiceState.mode.label)
                     }
                 }
                 if (sessionActive) {
                     Button(onClick = onStopDrive, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = NavRed, contentColor = NavBg)) {
-                        Text("STOP NAVIGATION", fontWeight = FontWeight.ExtraBold)
+                        Text(if (route != null || routeUi.planning || routeUi.waitingForGps) "STOP NAVIGATION" else "STOP LIVE VIEW", fontWeight = FontWeight.ExtraBold)
                     }
                 } else {
-                    Button(onClick = { onQueryChange(""); onQuickRoute("") }, modifier = Modifier.fillMaxWidth()) {
-                        Text("START FREE DRIVE")
+                    Button(onClick = onStartLiveView, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                        Text("START LIVE VIEW", fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -920,7 +1009,7 @@ private fun NavigationHeader(
             Text(
                 when {
                     sessionActive && routed -> "3D lane-first navigation"
-                    sessionActive -> "3D Free Drive · live lane sensing"
+                    sessionActive -> "3D Live View · live lane sensing"
                     else -> "Lane-first navigation"
                 },
                 color = NavMuted,
@@ -931,7 +1020,7 @@ private fun NavigationHeader(
             gpsStale -> "GPS LOST"
             rerouting -> "REROUTING"
             sessionActive && routed -> "NAV"
-            sessionActive -> "FREE DRIVE"
+            sessionActive -> "LIVE VIEW"
             else -> "READY"
         }
         val color = when {
@@ -979,7 +1068,7 @@ private fun ManeuverCard(
         Column(Modifier.padding(16.dp)) {
             if (route == null) {
                 Text(
-                    if (sessionActive) "FREE DRIVE" else "READY",
+                    if (sessionActive) "LIVE VIEW" else "READY",
                     color = if (sessionActive) NavGreen else NavMuted,
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Bold,
@@ -994,7 +1083,7 @@ private fun ManeuverCard(
                     if (sessionActive) {
                         "3D map follow and lane sensing are running without a destination."
                     } else {
-                        "Enter a destination and tap Start Navigation, or leave it blank for Free Drive."
+                        "Enter a destination and tap Start Navigation, or leave it blank for Live View."
                     },
                     color = NavMuted,
                     fontSize = 12.sp,
@@ -1230,6 +1319,7 @@ private fun DestinationCard(
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var voiceMenuExpanded by remember { mutableStateOf(false) }
+    var voiceGroup by remember { mutableStateOf<String?>(null) }
     val focusManager = LocalFocusManager.current
     val store = remember { DestinationStore(context.applicationContext) }
     val photon = remember { PhotonSearchClient() }
@@ -1271,7 +1361,7 @@ private fun DestinationCard(
         ?: query.trim().takeIf { it.isNotBlank() }
     val selectedVoiceLabel = voiceState.voices
         .firstOrNull { it.id == voiceState.selectedVoiceId }
-        ?.label
+        ?.let { if (it.group == "Defaults & effects") it.label else "${it.group} · ${it.label}" }
         ?: "System default"
 
     Card(
@@ -1290,7 +1380,7 @@ private fun DestinationCard(
                 if (sessionActive) {
                     "Change this only while parked."
                 } else {
-                    "Enter a destination, or leave blank for Free Drive."
+                    "Enter a destination, or leave blank for Live View."
                 },
                 color = NavMuted,
                 fontSize = 10.sp,
@@ -1335,22 +1425,21 @@ private fun DestinationCard(
             Spacer(Modifier.height(7.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                 OutlinedButton(
-                    onClick = { voiceController.setMuted(!voiceState.muted) },
+                    onClick = { voiceController.cycleMode() },
                     enabled = voiceState.ready,
                     modifier = Modifier.weight(0.8f),
                 ) {
                     Text(
                         when {
                             !voiceState.ready -> "VOICE…"
-                            voiceState.muted -> "🔇 MUTED"
-                            else -> "🔊 VOICE"
+                            else -> voiceState.mode.label
                         },
                         maxLines = 1,
                     )
                 }
                 Box(Modifier.weight(1.2f)) {
                     OutlinedButton(
-                        onClick = { voiceMenuExpanded = true },
+                        onClick = { voiceGroup = null; voiceMenuExpanded = true },
                         enabled = voiceState.ready && voiceState.voices.isNotEmpty(),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
@@ -1360,19 +1449,33 @@ private fun DestinationCard(
                         expanded = voiceMenuExpanded,
                         onDismissRequest = { voiceMenuExpanded = false },
                     ) {
-                        voiceState.voices.forEach { option ->
-                            DropdownMenuItem(
-                                text = { Text(option.label) },
-                                onClick = {
-                                    voiceController.selectVoice(option.id)
-                                    voiceMenuExpanded = false
-                                },
-                            )
+                        if (voiceGroup == null) {
+                            voiceState.voices.map { it.group }.distinct().forEach { group ->
+                                DropdownMenuItem(text = { Text(group) }, onClick = { voiceGroup = group })
+                            }
+                        } else {
+                            DropdownMenuItem(text = { Text("‹ All languages / regions") }, onClick = { voiceGroup = null })
+                            voiceState.voices.filter { it.group == voiceGroup }.forEach { option ->
+                                DropdownMenuItem(
+                                    text = { Text(option.label) },
+                                    onClick = {
+                                        voiceController.selectVoice(option.id)
+                                        voiceMenuExpanded = false
+                                    },
+                                )
+                            }
                         }
                     }
                 }
             }
 
+            TextButton(onClick = { voiceController.previewSelectedVoice() },
+                enabled = voiceState.ready && !voiceState.muted) {
+                Text(if (voiceState.muted) "Unmute to test voice" else "TEST SELECTED VOICE")
+            }
+
+            Text("Alerts only: rerouting and arrival. No turn-by-turn speech.",
+                color = NavMuted, fontSize = 12.sp)
             Spacer(Modifier.height(7.dp))
             OutlinedTextField(
                 value = query,
@@ -1521,7 +1624,7 @@ private fun DestinationCard(
                         when {
                             routeUi.planning -> "BUILDING ROUTE…"
                             sessionActive -> "ROUTE TO THIS"
-                            query.isBlank() -> "START FREE DRIVE"
+                            query.isBlank() -> "START LIVE VIEW"
                             else -> "START NAVIGATION"
                         },
                         fontWeight = FontWeight.ExtraBold,

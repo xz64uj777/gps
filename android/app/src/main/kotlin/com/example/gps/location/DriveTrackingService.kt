@@ -32,6 +32,25 @@ class DriveTrackingService : Service() {
     private var tracker: AndroidGnssTracker? = null
     @Volatile private var latestState: GnssUiState? = null
     private var lastPersistElapsed = 0L
+    private val idleHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var idlePolicy = DriveIdlePolicy(0L)
+    @Volatile private var stopping = false
+    private val idleCheck = object : Runnable {
+        override fun run() {
+            if (stopping || !store.isActive()) return
+            val now = SystemClock.elapsedRealtime()
+            val state = latestState
+            val moving = state != null &&
+                FixFreshness.isFresh(state.lastUpdateMillis, System.currentTimeMillis()) &&
+                (state.accuracyMeters ?: Float.MAX_VALUE) <= 50f &&
+                (state.speedMps ?: 0f) >= 1f
+            if (idlePolicy.shouldStop(now, DriveSessionRuntime.hasVisibleScreen(), hasActiveRoute(), moving)) {
+                stopAndSave("DRIVE_AUTO_STOPPED_IDLE")
+                return
+            }
+            idleHandler.postDelayed(this, 10_000L)
+        }
+    }
     private var wakeLock: PowerManager.WakeLock? = null
 
     private val laneExecutor = Executors.newSingleThreadExecutor()
@@ -53,6 +72,20 @@ class DriveTrackingService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action != ACTION_START && intent?.action != ACTION_STOP && tracker == null) {
+            // A process restart must not silently revive a standalone drive hours later.
+            // A saved active route is the explicit exception for navigation recovery.
+            if (!store.isActive() || !hasActiveRoute()) {
+                startForeground(NOTIFICATION_ID, buildNotification())
+                if (store.isActive()) stopAndSave("DRIVE_STOPPED_INTERRUPTED")
+                else {
+                    stopping = true
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
+                return START_NOT_STICKY
+            }
+        }
         when (intent?.action) {
             ACTION_STOP -> {
                 stopAndSave()
@@ -71,10 +104,20 @@ class DriveTrackingService : Service() {
         return START_STICKY
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // Explicit task dismissal finalizes the recording, including active navigation.
+        stopAndSave("DRIVE_STOPPED_APP_CLOSED")
+        super.onTaskRemoved(rootIntent)
+    }
+
+    private fun hasActiveRoute(): Boolean =
+        com.example.gps.route.ActiveNavigationStore(this).load()?.arrived == false
+
     override fun onDestroy() {
+        idleHandler.removeCallbacks(idleCheck)
         tracker?.stop()
         tracker = null
-        latestState?.let(store::save)
+        if (!stopping) latestState?.let(store::save)
         releaseWakeLock()
         laneExecutor.shutdownNow()
         super.onDestroy()
@@ -109,6 +152,10 @@ class DriveTrackingService : Service() {
         }
         if (tracker != null) return
 
+        stopping = false
+        idlePolicy = DriveIdlePolicy(SystemClock.elapsedRealtime())
+        idleHandler.removeCallbacks(idleCheck)
+        idleHandler.postDelayed(idleCheck, 10_000L)
         store.setActive(true)
         startForeground(NOTIFICATION_ID, buildNotification())
         acquireWakeLock()
@@ -135,8 +182,11 @@ class DriveTrackingService : Service() {
         ).also { it.start() }
     }
 
-    private fun stopAndSave() {
-        com.example.gps.route.NavigationTelemetryRuntime.lifecycle("NAVIGATION_STOPPED")
+    private fun stopAndSave(reason: String = "NAVIGATION_STOPPED") {
+        if (stopping) return
+        stopping = true
+        idleHandler.removeCallbacks(idleCheck)
+        com.example.gps.route.NavigationTelemetryRuntime.lifecycle(reason)
         com.example.gps.route.ActiveNavigationStore(this).clear()
         tracker?.stop()
         tracker = null
@@ -146,8 +196,8 @@ class DriveTrackingService : Service() {
             message = "Drive test stopped · summary saved",
         )
         latestState = finalState
-        store.save(finalState)
         store.setActive(false)
+        store.save(finalState)
         DriveSessionRuntime.publish(finalState)
         releaseWakeLock()
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -214,6 +264,7 @@ class DriveTrackingService : Service() {
                 laneFetchInFlight = false
             }
 
+            if (stopping) return@execute
             val currentState = latestState ?: return@execute
             val mergedState = applyLaneMatch(currentState)
             latestState = mergedState
