@@ -119,6 +119,7 @@ class NavigationActivity : ComponentActivity() {
 
     private var uiState by mutableStateOf(GnssUiState())
     private var sessionActive by mutableStateOf(false)
+    private var recordingActive by mutableStateOf(false)
     private var routeQuery by mutableStateOf("")
     private var routeUi by mutableStateOf(NavigationRouteUi())
 
@@ -134,6 +135,7 @@ class NavigationActivity : ComponentActivity() {
         runOnUiThread {
             uiState = state
             sessionActive = store.isActive()
+            recordingActive = store.isRecording()
             if (!sessionActive && (routeUi.summary != null || pendingRouteQuery != null || routeUi.planning)) clearRoute()
 
             val pending = pendingRouteQuery
@@ -164,6 +166,7 @@ class NavigationActivity : ComponentActivity() {
         store = DriveSessionStore(this)
         uiState = DriveSessionRuntime.latest() ?: store.load()
         sessionActive = store.isActive()
+        recordingActive = store.isRecording()
         val recovered = if (sessionActive) navigationStore.load() else null
         if (!sessionActive) navigationStore.clear()
         routeQuery = recovered?.destinationName.orEmpty()
@@ -216,6 +219,7 @@ class NavigationActivity : ComponentActivity() {
                 NavigationScreen(
                     state = uiState,
                     sessionActive = sessionActive,
+                    recordingActive = recordingActive,
                     followingLocation = followingLocation,
                     onRecenter = {
                         followingLocation = true
@@ -244,18 +248,13 @@ class NavigationActivity : ComponentActivity() {
                         }
                     },
                     onStartLiveView = {
-                        // Live view is independent of any text left in destination search.
+                        // Live View is sensing-only; trip recording is always explicit.
                         routeQuery = ""
                         startDrive()
                     },
-                    onStopDrive = {
-                        if (routeUi.summary != null || routeUi.planning || routeUi.waitingForGps) {
-                            clearRoute() // Ending directions returns to destination-free Live View.
-                        } else {
-                            liveViewStoppedByUser = true
-                            stopDrive()
-                        }
-                    },
+                    onStartTrip = { startTripRecording() },
+                    onStopTrip = { stopTripRecording() },
+                    onStopNavigation = { clearRoute() },
                     onEnableLocation = { requestDrivePermissions(true) },
                     onOpenDiagnostics = { startActivity(Intent(this, MainActivity::class.java)) },
                 )
@@ -270,6 +269,7 @@ class NavigationActivity : ComponentActivity() {
         mapView.onStart()
         uiState = DriveSessionRuntime.latest() ?: store.load()
         sessionActive = store.isActive()
+        recordingActive = store.isRecording()
         DriveSessionRuntime.addListener(runtimeListener)
         if (!liveViewStoppedByUser && !pendingStart) {
             if (hasFineLocationPermission()) {
@@ -299,7 +299,7 @@ class NavigationActivity : ComponentActivity() {
     override fun onStop() {
         // Standalone live view belongs to this visible screen. A saved route keeps
         // its existing background/recovery behavior; folding must not end a session.
-        if (!isChangingConfigurations && sessionActive && routeUi.summary == null &&
+        if (!isChangingConfigurations && sessionActive && !recordingActive && routeUi.summary == null &&
             pendingRouteQuery == null && !routeUi.planning && !routeUi.waitingForGps) {
             stopDrive()
         }
@@ -512,9 +512,28 @@ class NavigationActivity : ComponentActivity() {
         lastProgressFixTimestamp = null
         lastMapFixTimestamp = null
         val intent = Intent(this, DriveTrackingService::class.java)
-            .setAction(DriveTrackingService.ACTION_START)
-            .putExtra(DriveTrackingService.EXTRA_RESET, true)
+            .setAction(DriveTrackingService.ACTION_OPEN_LIVE_VIEW)
         ContextCompat.startForegroundService(this, intent)
+    }
+
+    private fun startTripRecording() {
+        if (recordingActive) return
+        recordingActive = true
+        ContextCompat.startForegroundService(
+            this,
+            Intent(this, DriveTrackingService::class.java)
+                .setAction(DriveTrackingService.ACTION_START)
+                .putExtra(DriveTrackingService.EXTRA_RESET, true)
+        )
+    }
+
+    private fun stopTripRecording() {
+        if (!recordingActive) return
+        recordingActive = false
+        startService(
+            Intent(this, DriveTrackingService::class.java)
+                .setAction(DriveTrackingService.ACTION_STOP_RECORDING)
+        )
     }
 
     private fun ensureLiveView() {
@@ -739,6 +758,7 @@ class NavigationActivity : ComponentActivity() {
 private fun NavigationScreen(
     state: GnssUiState,
     sessionActive: Boolean,
+    recordingActive: Boolean,
     followingLocation: Boolean,
     onRecenter: () -> Unit,
     query: String,
@@ -749,7 +769,9 @@ private fun NavigationScreen(
     onClearRoute: () -> Unit,
     onPrimaryAction: () -> Unit,
     onStartLiveView: () -> Unit,
-    onStopDrive: () -> Unit,
+    onStartTrip: () -> Unit,
+    onStopTrip: () -> Unit,
+    onStopNavigation: () -> Unit,
     onEnableLocation: () -> Unit,
     onOpenDiagnostics: () -> Unit,
 ) {
@@ -861,8 +883,10 @@ private fun NavigationScreen(
                             routeUi.planning -> "BUILDING ROUTE…"
                             routeUi.waitingForGps -> "WAITING FOR ACCURATE GPS…"
                             route?.arrived == true -> "ARRIVED"
-                            route != null -> "NAVIGATION"
-                            sessionActive -> "LIVE VIEW"
+                            route != null && recordingActive -> "NAVIGATION · TRIP RECORDING"
+                            route != null -> "NAVIGATION · NOT RECORDING"
+                            recordingActive -> "TRIP RECORDING"
+                            sessionActive -> "LIVE VIEW · NOT RECORDING"
                             else -> "LaneGPS · READY"
                         }, color = if (gpsStale) NavRed else NavBlueSoft,
                         fontWeight = FontWeight.Bold, fontSize = 12.sp,
@@ -910,14 +934,34 @@ private fun NavigationScreen(
                         Text(voiceState.mode.label)
                     }
                 }
-                if (sessionActive) {
-                    Button(onClick = onStopDrive, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = NavRed, contentColor = NavBg)) {
-                        Text(if (route != null || routeUi.planning || routeUi.waitingForGps) "STOP NAVIGATION" else "STOP LIVE VIEW", fontWeight = FontWeight.ExtraBold)
-                    }
-                } else {
+                if (!sessionActive) {
                     Button(onClick = onStartLiveView, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                         Text("START LIVE VIEW", fontWeight = FontWeight.Bold)
+                    }
+                } else {
+                    Text(
+                        if (recordingActive) "TRIP RECORDING ON" else "LIVE VIEW ON · TRIP RECORDING OFF",
+                        color = if (recordingActive) NavRed else NavGreen,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                    )
+                    if (recordingActive) {
+                        Button(
+                            onClick = onStopTrip,
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = NavRed, contentColor = NavBg),
+                        ) {
+                            Text("STOP & SAVE TRIP", fontWeight = FontWeight.ExtraBold)
+                        }
+                    } else {
+                        Button(onClick = onStartTrip, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                            Text("START TRIP RECORDING", fontWeight = FontWeight.ExtraBold)
+                        }
+                    }
+                    if (route != null || routeUi.planning || routeUi.waitingForGps) {
+                        OutlinedButton(onClick = onStopNavigation, modifier = Modifier.fillMaxWidth()) {
+                            Text("STOP NAVIGATION", fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             }
