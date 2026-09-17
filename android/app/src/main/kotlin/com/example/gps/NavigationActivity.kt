@@ -1036,56 +1036,102 @@ private fun CompactLaneOverlay(
     laneNumber: Int?,
     laneCount: Int?,
     stale: Boolean,
+    weak: Boolean,
     settling: Boolean,
     active: Boolean,
     route: OpenRouteClient.RouteSummary?,
     targetLanes: Set<Int>,
+    turnHints: List<String>,
+    dimmed: Boolean,
 ) {
-    val laneKnown = active && !stale && !settling &&
+    val uncertain = stale || weak
+    val laneKnown = active &&
         laneNumber != null && laneCount != null && laneNumber in 1..laneCount
-    val exact = laneKnown && state.laneExactClaim
-    val likely = laneKnown && !exact
+    val exact = laneKnown && !uncertain && !settling && state.laneExactClaim
+    val likely = laneKnown && !exact && !uncertain && !settling
     val confidence = (state.laneConfidence.coerceIn(0f, 1f) * 100).roundToInt()
-    val targetTitle = if (laneCount != null && targetLanes.isNotEmpty()) {
+    val targetTitle = if (!uncertain && laneCount != null && targetLanes.isNotEmpty()) {
         targetLaneLabel(targetLanes, laneCount)
     } else null
+    val qualityText = when {
+        stale -> "GPS LOST"
+        weak -> "GPS WEAK"
+        else -> "GPS GOOD"
+    }
+    val qualityColor = when {
+        stale -> NavRed
+        weak -> NavAmber
+        else -> NavGreen
+    }
 
     Surface(color = NavCard, shape = RoundedCornerShape(16.dp)) {
-        Column(Modifier.padding(10.dp)) {
-            Text(
-                when {
-                    !active -> "LANE GUIDANCE · waiting for live view"
-                    stale -> "LANES UNKNOWN · GPS lost"
-                    settling -> "UPDATING ROAD LANES"
-                    targetTitle != null -> targetTitle
-                    exact -> "LANE $laneNumber OF $laneCount · CONFIRMED"
-                    likely -> "LIKELY LANE $laneNumber OF $laneCount · $confidence%"
-                    laneCount != null -> "$laneCount LANES · POSITION UNCERTAIN"
-                    state.laneCandidateCount > 0 -> "ROAD FOUND · RESOLVING LANES"
-                    else -> "LANES UNKNOWN · scanning road"
-                },
-                color = when {
-                    targetTitle != null -> NavBlueSoft
-                    exact -> NavGreen
-                    else -> NavAmber
-                },
-                fontWeight = FontWeight.ExtraBold,
-                fontSize = 16.sp,
-            )
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    when {
+                        !active -> "LANE GUIDANCE · waiting for live view"
+                        uncertain -> "LANE UNCERTAIN · holding last good view"
+                        settling -> "UPDATING ROAD LANES"
+                        targetTitle != null -> targetTitle
+                        exact -> "LANE $laneNumber OF $laneCount · CONFIRMED"
+                        likely -> "LIKELY LANE $laneNumber OF $laneCount · $confidence%"
+                        laneCount != null -> "$laneCount LANES · POSITION UNCERTAIN"
+                        state.laneCandidateCount > 0 -> "ROAD FOUND · RESOLVING LANES"
+                        else -> "LANES UNKNOWN · scanning road"
+                    },
+                    modifier = Modifier.weight(1f),
+                    color = when {
+                        uncertain -> NavAmber
+                        targetTitle != null -> NavBlueSoft
+                        exact -> NavGreen
+                        else -> NavAmber
+                    },
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 15.sp,
+                )
+                Surface(
+                    color = qualityColor.copy(alpha = 0.16f),
+                    shape = RoundedCornerShape(99.dp),
+                ) {
+                    Text(
+                        qualityText,
+                        color = qualityColor,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 9.sp,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                    )
+                }
+            }
+
             if (active) {
                 LaneRoadDiagram(
-                    laneCount = if (stale || settling) null else laneCount,
+                    laneCount = laneCount,
                     currentLane = if (laneKnown) laneNumber else null,
                     exact = exact,
                     targetLanes = targetLanes,
-                    turnHints = state.laneTurnHints,
+                    turnHints = turnHints,
+                    dimmed = uncertain,
                 )
+
+                route?.takeIf { !it.arrived }?.let {
+                    NextMoveStrip(
+                        route = it,
+                        currentLane = laneNumber,
+                        targetLanes = targetLanes,
+                        exact = exact,
+                        uncertain = uncertain,
+                    )
+                }
+
                 Text(
                     when {
                         !state.fixReceived -> "Waiting for a GPS fix. Live View is already running."
-                        stale -> "GPS fix lost. Current-lane marker is hidden until a fresh fix arrives."
-                        (state.accuracyMeters ?: Float.MAX_VALUE) > 25f ->
-                            "GPS uncertainty ±${state.accuracyMeters?.roundToInt() ?: 0} m is too wide to identify a lane."
+                        stale -> "GPS lost. The last trustworthy lane picture is frozen instead of jumping."
+                        weak -> "GPS is weak. LaneGPS is holding the last good lane picture until readings settle."
                         targetLanes.isNotEmpty() && exact && laneNumber != null ->
                             laneMoveAdvice(laneNumber, targetLanes) + " · Blue = route lane; green = confirmed car."
                         targetLanes.isNotEmpty() ->
@@ -1095,10 +1141,10 @@ private fun CompactLaneOverlay(
                         !exact && "BLOCK MAP_SOURCE" in state.laneDataStatus ->
                             "This road's lane layout is inferred or incomplete. Current lane cannot be confirmed."
                         !exact && !state.sensorFrameCalibrated ->
-                            "Current lane unconfirmed. Keep the phone mounted while motion calibration settles."
+                            "Current lane unconfirmed while motion calibration settles."
                         exact -> "Green car = confirmed current lane."
                         likely -> "Amber car = likely current lane; LaneGPS is not claiming it as exact yet."
-                        settling -> "Road layout is changing; current-lane marker is paused until it settles."
+                        settling -> "Road layout is changing; LaneGPS waits for a stable layout before switching."
                         else -> "LaneGPS is waiting for enough road/GPS evidence to place your car."
                     },
                     color = NavMuted,
@@ -1106,6 +1152,55 @@ private fun CompactLaneOverlay(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun NextMoveStrip(
+    route: OpenRouteClient.RouteSummary,
+    currentLane: Int?,
+    targetLanes: Set<Int>,
+    exact: Boolean,
+    uncertain: Boolean,
+) {
+    val nearest = currentLane?.let { current ->
+        targetLanes.minByOrNull { kotlin.math.abs(it - current) }
+    }
+    val delta = if (currentLane != null && nearest != null) kotlin.math.abs(nearest - currentLane) else 0
+    val alreadyCorrect = exact && currentLane != null && currentLane in targetLanes
+    val text = when {
+        uncertain -> "LANE UNCERTAIN · hold current position"
+        alreadyCorrect -> "STAY · current lane"
+        exact && currentLane != null && nearest != null && nearest < currentLane ->
+            "← LEFT ${delta.coerceAtLeast(1)} · in ${formatNavDistance(route.nextManeuverDistanceMeters)}"
+        exact && currentLane != null && nearest != null && nearest > currentLane ->
+            "RIGHT ${delta.coerceAtLeast(1)} → · in ${formatNavDistance(route.nextManeuverDistanceMeters)}"
+        else ->
+            "${com.example.gps.laneengine.ManeuverInstruction.symbol(route.nextManeuver)} ${route.nextManeuver} · in ${formatNavDistance(route.nextManeuverDistanceMeters)}"
+    }
+    Surface(
+        color = when {
+            uncertain -> NavAmber.copy(alpha = 0.13f)
+            alreadyCorrect -> NavGreen.copy(alpha = 0.10f)
+            else -> NavBlue.copy(alpha = 0.16f)
+        },
+        shape = RoundedCornerShape(12.dp),
+    ) {
+        Text(
+            text,
+            modifier = Modifier.fillMaxWidth().padding(
+                horizontal = 10.dp,
+                vertical = if (alreadyCorrect) 6.dp else 9.dp,
+            ),
+            color = when {
+                uncertain -> NavAmber
+                alreadyCorrect -> NavGreen
+                else -> Color.White
+            },
+            fontWeight = FontWeight.ExtraBold,
+            fontSize = if (alreadyCorrect) 12.sp else 16.sp,
+            maxLines = 2,
+        )
     }
 }
 
@@ -1143,7 +1238,7 @@ private fun LaneRoadDiagram(
                     lineTo(nearLeft + (nearRight - nearLeft) * rightFraction, bottom)
                     close()
                 }
-                drawPath(targetPath, NavBlue.copy(alpha = 0.34f))
+                drawPath(targetPath, NavBlue.copy(alpha = if (dimmed) 0.10f else 0.34f))
             }
         }
 
@@ -1173,7 +1268,8 @@ private fun LaneRoadDiagram(
                 val x = farLeft + (farRight - farLeft) * fraction
                 val shaftBottom = top + 34.dp.toPx()
                 val shaftTop = top + 12.dp.toPx()
-                val c = if (lane in targetLanes) Color.White else NavBlueSoft.copy(alpha = 0.75f)
+                val baseColor = if (lane in targetLanes) Color.White else NavBlueSoft.copy(alpha = 0.75f)
+                val c = if (dimmed) baseColor.copy(alpha = 0.28f) else baseColor
                 val stroke = if (lane in targetLanes) 2.4.dp.toPx() else 1.6.dp.toPx()
                 val through = tokens.any { it == "through" }
                 val left = tokens.any { "left" in it || it == "reverse" }
@@ -1202,7 +1298,7 @@ private fun LaneRoadDiagram(
                 val x = left + (right - left) * (currentLane - 0.5f) / laneCount
                 val width = minOf(25.dp.toPx(), (right - left) / laneCount * 0.68f)
                 val y = top + (bottom - top) * depth
-                val carColor = if (exact) NavGreen else NavAmber
+                val carColor = (if (exact) NavGreen else NavAmber).copy(alpha = if (dimmed) 0.45f else 1f)
                 drawRoundRect(
                     carColor,
                     Offset(x - width / 2, y - 17.dp.toPx()),
