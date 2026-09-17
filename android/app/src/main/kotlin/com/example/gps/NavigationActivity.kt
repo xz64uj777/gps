@@ -878,12 +878,13 @@ private fun NavigationScreen(
         gpsWeak, gpsStale, layoutSettling, laneCount, liveLaneNumber,
         state.laneTurnHints, liveTargetLanes,
     ) {
-        if (!gpsWeak && !gpsStale && !layoutSettling && laneCount != null) {
-            frozenLaneCount = laneCount
-            if (liveLaneNumber != null && liveLaneNumber in 1..laneCount) {
+        val stableLaneCount = laneCount
+        if (!gpsWeak && !gpsStale && !layoutSettling && stableLaneCount != null) {
+            frozenLaneCount = stableLaneCount
+            if (liveLaneNumber != null && liveLaneNumber in 1..stableLaneCount) {
                 frozenLaneNumber = liveLaneNumber
             }
-            if (state.laneTurnHints.size == laneCount) frozenTurnHints = state.laneTurnHints
+            if (state.laneTurnHints.size == stableLaneCount) frozenTurnHints = state.laneTurnHints
             frozenTargetLanes = liveTargetLanes
         }
     }
@@ -1042,7 +1043,6 @@ private fun CompactLaneOverlay(
     route: OpenRouteClient.RouteSummary?,
     targetLanes: Set<Int>,
     turnHints: List<String>,
-    dimmed: Boolean,
 ) {
     val uncertain = stale || weak
     val laneKnown = active &&
@@ -1211,6 +1211,7 @@ private fun LaneRoadDiagram(
     exact: Boolean,
     targetLanes: Set<Int>,
     turnHints: List<String>,
+    dimmed: Boolean,
 ) {
     Canvas(Modifier.fillMaxWidth().height(118.dp).padding(vertical = 4.dp)) {
         val nearLeft = size.width * 0.04f
