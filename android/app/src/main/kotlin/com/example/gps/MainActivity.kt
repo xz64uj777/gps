@@ -74,7 +74,7 @@ class MainActivity : ComponentActivity() {
     private val runtimeListener: (GnssUiState) -> Unit = { state ->
         runOnUiThread {
             uiState = state
-            sessionActive = store.isActive()
+            sessionActive = store.isRecording()
             exportedLogName = store.lastExportedLogName()
 
             val pending = pendingRouteQuery
@@ -98,7 +98,7 @@ class MainActivity : ComponentActivity() {
         laneApiSettings = LaneApiSettings(this)
         laneApiUrl = laneApiSettings.getBaseUrl()
         uiState = DriveSessionRuntime.latest() ?: store.load()
-        sessionActive = store.isActive()
+        sessionActive = store.isRecording()
         exportedLogName = store.lastExportedLogName()
 
         setContent {
@@ -138,7 +138,7 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         uiState = DriveSessionRuntime.latest() ?: store.load()
-        sessionActive = store.isActive()
+        sessionActive = store.isRecording()
         exportedLogName = store.lastExportedLogName()
         DriveSessionRuntime.addListener(runtimeListener)
     }
@@ -228,6 +228,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startDriveTestInternal() {
+        // A stale/double tap must never reset an already-recording trip.
+        if (store.isRecording()) {
+            sessionActive = true
+            return
+        }
         sessionActive = true
         uiState = GnssUiState(message = "Starting new drive test…")
         val intent = Intent(this, DriveTrackingService::class.java)
