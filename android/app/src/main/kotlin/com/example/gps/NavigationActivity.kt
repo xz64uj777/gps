@@ -820,7 +820,7 @@ private fun NavigationScreen(
         }
     }
     val layoutSettling = laneCount != rawLaneCount
-    val laneNumber = if (gpsStale || layoutSettling || !state.laneExactClaim) null
+    val laneNumber = if (gpsStale || layoutSettling) null
         else state.likelyLaneNumberFromLeft
     val route = routeUi.summary
 
@@ -928,32 +928,47 @@ private fun NavigationScreen(
 
 @Composable
 private fun CompactLaneOverlay(state: GnssUiState, laneNumber: Int?, laneCount: Int?, stale: Boolean, settling: Boolean, active: Boolean) {
-    // Same conservative inputs as the original LaneCard; no highlight during settling or stale GPS.
-    val exact = active && !stale && !settling && state.laneExactClaim &&
+    val laneKnown = active && !stale && !settling &&
         laneNumber != null && laneCount != null && laneNumber in 1..laneCount
+    val exact = laneKnown && state.laneExactClaim
+    val likely = laneKnown && !exact
+    val confidence = (state.laneConfidence.coerceIn(0f, 1f) * 100).roundToInt()
     Surface(color = NavCard, shape = RoundedCornerShape(16.dp)) {
         Column(Modifier.padding(10.dp)) {
-            Text(when {
-                !active -> "LANE GUIDANCE · start a drive"
-                stale -> "LANES UNKNOWN · GPS lost"
-                settling -> "UPDATING ROAD LANES"
-                exact -> "LANE $laneNumber OF $laneCount"
-                laneCount != null -> "$laneCount LANES · POSITION UNCERTAIN"
-                else -> "LANES UNKNOWN · scanning road"
-            }, color = if (exact) NavGreen else NavAmber, fontWeight = FontWeight.ExtraBold, fontSize = 16.sp)
-            if (active) {
-                LaneRoadDiagram(if (stale || settling) null else laneCount, if (exact) laneNumber else null)
-                Text(if (exact) "Green car = confirmed lane · target lane unavailable"
-                    else "Your lane is unconfirmed · target lane unavailable",
-                    color = NavMuted, fontSize = 10.sp)
-            }
+  Text(when {
+      !active -> "LANE GUIDANCE · waiting for live view"
+      stale -> "LANES UNKNOWN · GPS lost"
+      settling -> "UPDATING ROAD LANES"
+      exact -> "LANE $laneNumber OF $laneCount · CONFIRMED"
+      likely -> "LIKELY LANE $laneNumber OF $laneCount · $confidence%"
+      laneCount != null -> "$laneCount LANES · POSITION UNCERTAIN"
+      state.laneCandidateCount > 0 -> "ROAD FOUND · RESOLVING LANES"
+      else -> "LANES UNKNOWN · scanning road"
+  }, color = if (exact) NavGreen else NavAmber, fontWeight = FontWeight.ExtraBold, fontSize = 16.sp)
+  if (active) {
+      LaneRoadDiagram(
+          laneCount = if (stale || settling) null else laneCount,
+          currentLane = if (laneKnown) laneNumber else null,
+          exact = exact,
+      )
+      Text(
+          when {
+              exact -> "Green car = confirmed current lane."
+              likely -> "Amber car = likely current lane; LaneGPS is not claiming it as exact yet."
+              settling -> "Road layout is changing; current-lane marker is paused until it settles."
+              else -> "LaneGPS is waiting for enough road/GPS evidence to place your car."
+          },
+          color = NavMuted,
+          fontSize = 10.sp,
+      )
+  }
         }
     }
 }
 
 @Composable
-private fun LaneRoadDiagram(laneCount: Int?, currentLane: Int?) {
-    Canvas(Modifier.fillMaxWidth().height(100.dp).padding(vertical = 4.dp)) {
+private fun LaneRoadDiagram(laneCount: Int?, currentLane: Int?, exact: Boolean) {
+    Canvas(Modifier.fillMaxWidth().height(112.dp).padding(vertical = 4.dp)) {
         val nearLeft = size.width * 0.04f
         val nearRight = size.width * 0.96f
         val farLeft = size.width * 0.32f
@@ -961,33 +976,34 @@ private fun LaneRoadDiagram(laneCount: Int?, currentLane: Int?) {
         val top = size.height * 0.06f
         val bottom = size.height
         val road = Path().apply {
-            moveTo(nearLeft, bottom); lineTo(farLeft, top)
-            lineTo(farRight, top); lineTo(nearRight, bottom); close()
+  moveTo(nearLeft, bottom); lineTo(farLeft, top)
+  lineTo(farRight, top); lineTo(nearRight, bottom); close()
         }
         drawPath(road, Color(0xFF263344))
         drawLine(Color.White, Offset(nearLeft, bottom), Offset(farLeft, top), 2.dp.toPx())
         drawLine(Color.White, Offset(nearRight, bottom), Offset(farRight, top), 2.dp.toPx())
         if (laneCount != null) {
-            for (boundary in 1 until laneCount) {
-                val fraction = boundary.toFloat() / laneCount
-                drawLine(Color(0xFFD9E2EF),
-                    Offset(nearLeft + (nearRight - nearLeft) * fraction, bottom),
-                    Offset(farLeft + (farRight - farLeft) * fraction, top),
-                    strokeWidth = 1.5.dp.toPx(),
-                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(9.dp.toPx(), 6.dp.toPx())))
-            }
-            if (currentLane != null && currentLane in 1..laneCount) {
-                val depth = 0.76f
-                val left = farLeft + (nearLeft - farLeft) * depth
-                val right = farRight + (nearRight - farRight) * depth
-                val x = left + (right - left) * (currentLane - 0.5f) / laneCount
-                val width = minOf(23.dp.toPx(), (right - left) / laneCount * 0.65f)
-                val y = top + (bottom - top) * depth
-                drawRoundRect(NavGreen, Offset(x - width / 2, y - 15.dp.toPx()),
-                    Size(width, 29.dp.toPx()), CornerRadius(4.dp.toPx()))
-                drawRoundRect(NavBg, Offset(x - width * 0.32f, y - 10.dp.toPx()),
-                    Size(width * 0.64f, 7.dp.toPx()), CornerRadius(2.dp.toPx()))
-            }
+  for (boundary in 1 until laneCount) {
+      val fraction = boundary.toFloat() / laneCount
+      drawLine(Color(0xFFD9E2EF),
+          Offset(nearLeft + (nearRight - nearLeft) * fraction, bottom),
+          Offset(farLeft + (farRight - farLeft) * fraction, top),
+          strokeWidth = 1.5.dp.toPx(),
+          pathEffect = PathEffect.dashPathEffect(floatArrayOf(9.dp.toPx(), 6.dp.toPx())))
+  }
+  if (currentLane != null && currentLane in 1..laneCount) {
+      val depth = 0.76f
+      val left = farLeft + (nearLeft - farLeft) * depth
+      val right = farRight + (nearRight - farRight) * depth
+      val x = left + (right - left) * (currentLane - 0.5f) / laneCount
+      val width = minOf(25.dp.toPx(), (right - left) / laneCount * 0.68f)
+      val y = top + (bottom - top) * depth
+      val carColor = if (exact) NavGreen else NavAmber
+      drawRoundRect(carColor, Offset(x - width / 2, y - 17.dp.toPx()),
+          Size(width, 33.dp.toPx()), CornerRadius(5.dp.toPx()))
+      drawRoundRect(NavBg, Offset(x - width * 0.32f, y - 11.dp.toPx()),
+          Size(width * 0.64f, 8.dp.toPx()), CornerRadius(2.dp.toPx()))
+  }
         }
     }
 }
