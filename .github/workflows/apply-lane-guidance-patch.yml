@@ -1,0 +1,35 @@
+name: Apply lane guidance patch
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'tools/lane_guidance_patch.py'
+
+permissions:
+  contents: write
+
+jobs:
+  apply-patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Apply route-aware lane guidance patch
+        run: python tools/lane_guidance_patch.py
+
+      - name: Commit patched sources
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "Patch already applied"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add android
+          git commit -m "Wire OSM turn lanes into live lane guidance"
+          git push
