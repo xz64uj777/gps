@@ -77,15 +77,27 @@ class DriveTrackingService : Service() {
             // Unlike sticky service recovery, a cold standalone entry starts a fresh session.
             when (LiveSessionPolicy.onOpen(tracker != null, store.isActive(), hasActiveRoute())) {
                 LiveSessionPolicy.Action.KEEP -> Unit
-                LiveSessionPolicy.Action.RESUME -> startRecording(resetSession = false)
+                LiveSessionPolicy.Action.RESUME -> startRecording(
+                    resetSession = false,
+                    recordTelemetry = store.isRecording(),
+                )
                 LiveSessionPolicy.Action.NEW -> {
                     if (store.isActive()) {
+                        val wasRecording = store.isRecording()
                         com.example.gps.route.NavigationTelemetryRuntime.lifecycle("DRIVE_STOPPED_INTERRUPTED")
                         store.setActive(false)
-                        store.save(store.load().copy(message = "Drive test stopped · interrupted session saved"))
+                        store.save(store.load().copy(
+                            message = if (wasRecording) {
+                                "Drive test stopped · interrupted session saved"
+                            } else {
+                                "Live View stopped"
+                            }
+                        ))
+                        store.setRecording(false)
                     }
                     com.example.gps.route.ActiveNavigationStore(this).clear()
-                    startRecording(resetSession = true)
+                    // Opening the map starts sensing only. It must not silently start a trip log.
+                    startRecording(resetSession = true, recordTelemetry = false)
                 }
             }
             return START_STICKY
@@ -109,10 +121,22 @@ class DriveTrackingService : Service() {
                 stopAndSave()
                 return START_NOT_STICKY
             }
-            ACTION_START -> startRecording(resetSession = intent.getBooleanExtra(EXTRA_RESET, true))
-            ACTION_RESUME -> startRecording(resetSession = false)
+            ACTION_START -> {
+                val alreadyRecording = store.isRecording()
+                startRecording(
+                    resetSession = if (alreadyRecording) false else intent.getBooleanExtra(EXTRA_RESET, true),
+                    recordTelemetry = true,
+                )
+            }
+            ACTION_RESUME -> startRecording(
+                resetSession = false,
+                recordTelemetry = store.isRecording(),
+            )
             else -> {
-                if (store.isActive()) startRecording(resetSession = false)
+                if (store.isActive()) startRecording(
+                    resetSession = false,
+                    recordTelemetry = store.isRecording(),
+                )
                 else {
                     stopSelf()
                     return START_NOT_STICKY
@@ -143,7 +167,10 @@ class DriveTrackingService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun startRecording(resetSession: Boolean) {
+    private fun startRecording(
+        resetSession: Boolean,
+        recordTelemetry: Boolean = true,
+    ) {
         if (resetSession) {
             tracker?.stop()
             tracker = null
@@ -168,13 +195,20 @@ class DriveTrackingService : Service() {
                 lastLaneFetchAttemptElapsed = 0L
             }
         }
-        if (tracker != null) return
+        if (tracker != null) {
+            // START while already recording is a no-op; START from Live View promotes
+            // the running sensor session to an intentional trip without a second tracker.
+            store.setActive(true)
+            if (recordTelemetry) store.setRecording(true)
+            return
+        }
 
         stopping = false
         idlePolicy = DriveIdlePolicy(SystemClock.elapsedRealtime())
         idleHandler.removeCallbacks(idleCheck)
         idleHandler.postDelayed(idleCheck, 10_000L)
         store.setActive(true)
+        store.setRecording(recordTelemetry)
         startForeground(NOTIFICATION_ID, buildNotification())
         acquireWakeLock()
 
@@ -202,6 +236,7 @@ class DriveTrackingService : Service() {
 
     private fun stopAndSave(reason: String = "NAVIGATION_STOPPED") {
         if (stopping) return
+        val wasRecording = store.isRecording()
         stopping = true
         idleHandler.removeCallbacks(idleCheck)
         com.example.gps.route.NavigationTelemetryRuntime.lifecycle(reason)
@@ -211,11 +246,17 @@ class DriveTrackingService : Service() {
         val finalState = mergeLaneOverlay(latestState ?: store.load()).copy(
             sensorLaneReady = false,
             laneExactClaim = false,
-            message = "Drive test stopped · summary saved",
+            message = if (wasRecording) {
+                "Drive test stopped · summary saved"
+            } else {
+                "Live View stopped"
+            },
         )
         latestState = finalState
         store.setActive(false)
+        // Keep recording=true through the final save so the last sample/export is captured.
         store.save(finalState)
+        store.setRecording(false)
         DriveSessionRuntime.publish(finalState)
         releaseWakeLock()
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -554,8 +595,14 @@ class DriveTrackingService : Service() {
         )
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
-            .setContentTitle("LaneGPS recording")
-            .setContentText("GNSS + motion + lane matching active. Tap STOP & SAVE when parked.")
+            .setContentTitle(if (store.isRecording()) "LaneGPS trip recording" else "LaneGPS Live View")
+            .setContentText(
+                if (store.isRecording()) {
+                    "Trip recording + GNSS + lane matching active."
+                } else {
+                    "Live sensing active · trip recording is OFF."
+                }
+            )
             .setContentIntent(openPendingIntent)
             .addAction(
                 Notification.Action.Builder(
