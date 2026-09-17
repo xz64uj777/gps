@@ -12,6 +12,13 @@ class DriveSessionStore(context: Context) {
         prefs.edit().putBoolean(KEY_ACTIVE, active).apply()
     }
 
+    /** True only while an intentional trip recording is in progress. */
+    fun isRecording(): Boolean = prefs.getBoolean(KEY_RECORDING, false)
+
+    fun setRecording(recording: Boolean) {
+        prefs.edit().putBoolean(KEY_RECORDING, recording).apply()
+    }
+
     fun clearSession() {
         prefs.edit().clear().commit()
         telemetry.startNew()
@@ -47,9 +54,11 @@ class DriveSessionStore(context: Context) {
             .putString(KEY_LAST_QUALITY_LABEL, state.qualityLabel)
             .commit()
 
-        telemetry.append(state)
+        val appendTelemetry = isRecording()
+        if (appendTelemetry) telemetry.append(state)
 
         if (
+            appendTelemetry &&
             state.message.startsWith("Drive test stopped") &&
             !prefs.getBoolean(KEY_LOG_EXPORTED, false)
         ) {
@@ -106,6 +115,7 @@ class DriveSessionStore(context: Context) {
     private companion object {
         const val PREFS_NAME = "lane_gps_drive_session"
         const val KEY_ACTIVE = "active"
+        const val KEY_RECORDING = "recording"
         const val KEY_SAMPLES = "samples"
         const val KEY_BEST_ACCURACY = "best_accuracy"
         const val KEY_WORST_ACCURACY = "worst_accuracy"
