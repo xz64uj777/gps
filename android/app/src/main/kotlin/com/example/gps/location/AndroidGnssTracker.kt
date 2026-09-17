@@ -283,7 +283,7 @@ class AndroidGnssTracker(
         )
         publish()
 
-        if (gpsProviderEnabled) {
+        if (LocationManager.GPS_PROVIDER in locationManager.allProviders) {
             locationManager.requestLocationUpdates(
                 LocationManager.GPS_PROVIDER,
                 250L,
@@ -291,7 +291,7 @@ class AndroidGnssTracker(
                 locationListener,
             )
         }
-        if (networkEnabled) {
+        if (LocationManager.NETWORK_PROVIDER in locationManager.allProviders) {
             locationManager.requestLocationUpdates(
                 LocationManager.NETWORK_PROVIDER,
                 1000L,

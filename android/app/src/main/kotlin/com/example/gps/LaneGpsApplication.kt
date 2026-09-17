@@ -28,6 +28,7 @@ class LaneGpsApplication : Application(), Application.ActivityLifecycleCallbacks
     override fun onActivityDestroyed(activity: Activity) {
         if (activity !is NavigationActivity) return
         if (!activity.isFinishing || activity.isChangingConfigurations) return
+        if (com.example.gps.location.DriveSessionRuntime.hasVisibleScreen()) return
 
         // Back/finish should finalize the session the same way the explicit
         // STOP button does. Task removal is finalized by the service callback.

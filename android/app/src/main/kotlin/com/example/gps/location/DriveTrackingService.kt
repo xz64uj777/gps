@@ -72,6 +72,24 @@ class DriveTrackingService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_OPEN_LIVE_VIEW) {
+            // Explicit foreground entry is idempotent: preserve a running tracker and route.
+            // Unlike sticky service recovery, a cold standalone entry starts a fresh session.
+            when (LiveSessionPolicy.onOpen(tracker != null, store.isActive(), hasActiveRoute())) {
+                LiveSessionPolicy.Action.KEEP -> Unit
+                LiveSessionPolicy.Action.RESUME -> startRecording(resetSession = false)
+                LiveSessionPolicy.Action.NEW -> {
+                    if (store.isActive()) {
+                        com.example.gps.route.NavigationTelemetryRuntime.lifecycle("DRIVE_STOPPED_INTERRUPTED")
+                        store.setActive(false)
+                        store.save(store.load().copy(message = "Drive test stopped · interrupted session saved"))
+                    }
+                    com.example.gps.route.ActiveNavigationStore(this).clear()
+                    startRecording(resetSession = true)
+                }
+            }
+            return START_STICKY
+        }
         if (intent?.action != ACTION_START && intent?.action != ACTION_STOP && tracker == null) {
             // A process restart must not silently revive a standalone drive hours later.
             // A saved active route is the explicit exception for navigation recovery.
@@ -586,6 +604,7 @@ class DriveTrackingService : Service() {
     )
 
     companion object {
+        const val ACTION_OPEN_LIVE_VIEW = "com.example.gps.action.OPEN_LIVE_VIEW"
         const val ACTION_START = "com.example.gps.action.START_DRIVE_TEST"
         const val ACTION_RESUME = "com.example.gps.action.RESUME_DRIVE_TEST"
         const val ACTION_STOP = "com.example.gps.action.STOP_DRIVE_TEST"

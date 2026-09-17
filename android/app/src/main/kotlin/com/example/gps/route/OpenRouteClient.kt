@@ -274,7 +274,10 @@ class OpenRouteClient {
                 }
                 maneuvers += RouteManeuver(
                     label = label,
-                    road = step.optString("name", ""),
+                    road = listOf(step.optString("ref", ""), step.optString("name", ""))
+                        .filter { it.isNotBlank() }.distinct().joinToString(" · ")
+                        .let { road -> step.optString("destinations", "").takeIf { it.isNotBlank() }
+                            ?.let { "$road toward $it" } ?: road },
                     lat = point.lat,
                     lon = point.lon,
                     routeIndex = nearestRouteIndex(point, geometry),

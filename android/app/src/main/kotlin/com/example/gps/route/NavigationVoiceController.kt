@@ -106,8 +106,18 @@ class NavigationVoiceController(
     }
 
     fun onRouteStarted(route: OpenRouteClient.RouteSummary) {
-        resetRoute()
-        maybeSpeak(route, force = true)
+        promptGate.reset()
+        val sameRoute = prefs.getLong("announced_route", -1L) == route.routeStartedAtMillis
+        arrivalSpoken = sameRoute && prefs.getBoolean("arrival_spoken", false)
+        if (sameRoute) {
+            val phases = runCatching { org.json.JSONObject(prefs.getString("announced_phases", "{}") ?: "{}") }
+                .getOrDefault(org.json.JSONObject())
+            promptGate.restore(phases.keys().asSequence().associateWith { phases.optInt(it, 3) })
+        } else {
+            prefs.edit().putLong("announced_route", route.routeStartedAtMillis)
+                .putString("announced_phases", "{}").putBoolean("arrival_spoken", false).apply()
+        }
+        maybeSpeak(route, force = false)
     }
 
     fun onProgress(route: OpenRouteClient.RouteSummary, speedMps: Double = 0.0) {
@@ -127,6 +137,7 @@ class NavigationVoiceController(
         if (route.arrived) {
             if (!arrivalSpoken) {
                 arrivalSpoken = true
+                prefs.edit().putBoolean("arrival_spoken", true).apply()
                 speak(route.destinationSide?.let { "Your destination is on the $it." }
                     ?: "You have arrived at your destination.", "arrival")
             }
@@ -135,14 +146,14 @@ class NavigationVoiceController(
 
         if (voiceMode() != VoiceMode.NORMAL) return
         val maneuver = route.nextManeuver.trim()
-        if (maneuver.isBlank()) return
+        if (maneuver.isBlank() || maneuver == "Continue" || maneuver == "Continue straight") return
         val road = route.nextRoad.trim()
-        val upcoming = route.maneuvers.firstOrNull {
-            it.routeIndex >= route.progressIndex && it.label == maneuver && it.road == road
-        }
+        val upcoming = route.maneuvers.filter { it.label == maneuver && it.road == road }
+            .minByOrNull { kotlin.math.abs(it.routeIndex - route.progressIndex) }
         val maneuverKey = "$maneuver|$road|${upcoming?.lat}|${upcoming?.lon}"
         if (promptGate.shouldSpeak(maneuverKey, route.nextManeuverDistanceMeters,
-                SystemClock.elapsedRealtime(), force, speedMps)) {
+                SystemClock.elapsedRealtime(), force, speedMps, highwayExit = "exit" in maneuver.lowercase(Locale.US))) {
+            prefs.edit().putString("announced_phases", org.json.JSONObject(promptGate.snapshot()).toString()).apply()
             val distance = spokenDistance(route.nextManeuverDistanceMeters)
             val roadPhrase = if (road.isNotBlank() && !maneuver.contains(road, ignoreCase = true)) {
                 " onto $road"

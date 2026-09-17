@@ -248,14 +248,21 @@ class NavigationActivity : ComponentActivity() {
                         routeQuery = ""
                         startDrive()
                     },
-                    onStopDrive = { liveViewStoppedByUser = true; stopDrive() },
+                    onStopDrive = {
+                        if (routeUi.summary != null || routeUi.planning || routeUi.waitingForGps) {
+                            clearRoute() // Ending directions returns to destination-free Live View.
+                        } else {
+                            liveViewStoppedByUser = true
+                            stopDrive()
+                        }
+                    },
                     onEnableLocation = { requestDrivePermissions(true) },
                     onOpenDiagnostics = { startActivity(Intent(this, MainActivity::class.java)) },
                 )
             }
         }
 
-        if (sessionActive && hasFineLocationPermission()) resumeDrive()
+        // onStart explicitly ensures a running live session, including after process death.
     }
 
     override fun onStart() {
@@ -264,11 +271,10 @@ class NavigationActivity : ComponentActivity() {
         uiState = DriveSessionRuntime.latest() ?: store.load()
         sessionActive = store.isActive()
         DriveSessionRuntime.addListener(runtimeListener)
-        if (!sessionActive && !liveViewStoppedByUser && !pendingStart) {
-            routeQuery = ""
+        if (!liveViewStoppedByUser && !pendingStart) {
             if (hasFineLocationPermission()) {
-                // Notification permission is optional for the visible live map.
-                startDriveInternal()
+                // An active preference does not prove the service is running.
+                ensureLiveView()
             } else if (!locationPromptedThisVisit) {
                 locationPromptedThisVisit = true
                 requestDrivePermissions(true)
@@ -509,6 +515,13 @@ class NavigationActivity : ComponentActivity() {
             .setAction(DriveTrackingService.ACTION_START)
             .putExtra(DriveTrackingService.EXTRA_RESET, true)
         ContextCompat.startForegroundService(this, intent)
+    }
+
+    private fun ensureLiveView() {
+        sessionActive = true
+        ContextCompat.startForegroundService(this,
+            Intent(this, DriveTrackingService::class.java)
+                .setAction(DriveTrackingService.ACTION_OPEN_LIVE_VIEW))
     }
 
     private fun resumeDrive() {
@@ -926,6 +939,8 @@ private fun NavigationScreen(
                     if (!state.permissionFine && !sessionActive) {
                         TextButton(onClick = onEnableLocation) { Text("Enable precise location") }
                     }
+                    Text("Normal voice: fewer turn cues, with an extra early highway-exit warning.", color = NavMuted, fontSize = 13.sp)
+                    Text("Live traffic is not connected. Travel times do not include live congestion.", color = NavMuted, fontSize = 13.sp)
                     TextButton(onClick = onOpenDiagnostics) { Text("Diagnostics & Trip Lab") }
                 }
             }
@@ -985,12 +1000,20 @@ private fun CompactLaneOverlay(
                 )
                 Text(
                     when {
+                        !state.fixReceived -> "Waiting for a GPS fix. Live View is already running."
+                        stale -> "GPS fix lost. Current-lane marker is hidden until a fresh fix arrives."
+                        (state.accuracyMeters ?: Float.MAX_VALUE) > 25f ->
+                            "GPS uncertainty ±${state.accuracyMeters?.roundToInt() ?: 0} m is too wide to identify a lane."
                         targetLanes.isNotEmpty() && exact && laneNumber != null ->
                             laneMoveAdvice(laneNumber, targetLanes) + " · Blue = route lane; green = confirmed car."
                         targetLanes.isNotEmpty() ->
                             "Blue = lane(s) mapped for ${route?.nextManeuver ?: "the next maneuver"}. Current lane is not confirmed yet."
-                        route != null ->
-                            "Route is active, but this road has no unambiguous OSM turn-lane data here yet."
+                        !exact && state.laneCandidateCount == 0 ->
+                            "No matching lane map here yet. GPS position alone cannot identify your lane."
+                        !exact && "BLOCK MAP_SOURCE" in state.laneDataStatus ->
+                            "This road's lane layout is inferred or incomplete. Current lane cannot be confirmed."
+                        !exact && !state.sensorFrameCalibrated ->
+                            "Current lane unconfirmed. Keep the phone mounted while motion calibration settles."
                         exact -> "Green car = confirmed current lane."
                         likely -> "Amber car = likely current lane; LaneGPS is not claiming it as exact yet."
                         settling -> "Road layout is changing; current-lane marker is paused until it settles."

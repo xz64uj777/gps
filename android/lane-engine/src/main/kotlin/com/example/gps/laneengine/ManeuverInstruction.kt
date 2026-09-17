@@ -23,7 +23,10 @@ object ManeuverInstruction {
             else -> ""
         }
         val sideSuffix = if (side.isEmpty()) "" else " on the $side"
-        return when (type) {
+        // Numbered exits can be tagged as forks/turns by a routing dataset.
+        // Only explicit exit metadata may promote those to an exit instruction.
+        val effectiveType = if (exits.isNotBlank() && type in setOf("fork", "turn", "end of road")) "off ramp" else type
+        return when (effectiveType) {
             "off ramp" -> "Take the exit" + exits.trim().takeIf { it.isNotEmpty() }?.let { " $it" }.orEmpty() + sideSuffix
             "on ramp" -> "Take the ramp$sideSuffix"
             "merge" -> if (side.isEmpty()) "Merge" else "Merge $side"

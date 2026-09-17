@@ -15,6 +15,10 @@ class ManeuverInstructionTest {
         assertEquals("Take the ramp on the right", ManeuverInstruction.text("on ramp", "right"))
         assertEquals("Enter the roundabout", ManeuverInstruction.text("roundabout", "right"))
     }
+    @Test fun numberedForkUsesExitMetadata() {
+        assertEquals("Take the exit 25S on the right", ManeuverInstruction.text("fork", "slight right", "25S"))
+        assertEquals("Take the exit 9 on the left", ManeuverInstruction.text("turn", "slight left", "9"))
+    }
     @Test fun normalTurnsRemainTurns() {
         assertEquals("Slight right", ManeuverInstruction.text("turn", "slight right"))
         assertEquals("Turn left", ManeuverInstruction.text("turn", "left"))
