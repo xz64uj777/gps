@@ -59,7 +59,8 @@ class DriveSessionStore(context: Context) {
 
         if (
             appendTelemetry &&
-            state.message.startsWith("Drive test stopped") &&
+            (state.message.startsWith("Drive test stopped") ||
+                state.message.startsWith("Trip recording saved")) &&
             !prefs.getBoolean(KEY_LOG_EXPORTED, false)
         ) {
             val exportedName = telemetry.exportToDownloads()
