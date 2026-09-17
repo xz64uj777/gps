@@ -102,6 +102,10 @@ class DriveTrackingService : Service() {
             }
             return START_STICKY
         }
+        if (intent?.action == ACTION_STOP_RECORDING) {
+            stopTripRecordingKeepLive()
+            return START_STICKY
+        }
         if (intent?.action != ACTION_START && intent?.action != ACTION_STOP && tracker == null) {
             // A process restart must not silently revive a standalone drive hours later.
             // A saved active route is the explicit exception for navigation recovery.
@@ -261,6 +265,21 @@ class DriveTrackingService : Service() {
         releaseWakeLock()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    private fun stopTripRecordingKeepLive() {
+        if (!store.isRecording()) return
+        val savedState = mergeLaneOverlay(latestState ?: store.load()).copy(
+            message = "Trip recording saved · Live View continues",
+        )
+        latestState = savedState
+        // Keep recording=true through save so DriveSessionStore appends the final
+        // sample and exports the trip. Then return to sensing-only mode.
+        store.save(savedState)
+        store.setRecording(false)
+        DriveSessionRuntime.publish(savedState)
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.notify(NOTIFICATION_ID, buildNotification())
     }
 
     private fun maybeFetchLaneCorridor(state: GnssUiState) {
@@ -585,8 +604,9 @@ class DriveTrackingService : Service() {
             openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+        val recording = store.isRecording()
         val stopIntent = Intent(this, DriveTrackingService::class.java)
-            .setAction(ACTION_STOP)
+            .setAction(if (recording) ACTION_STOP_RECORDING else ACTION_STOP)
         val stopPendingIntent = PendingIntent.getService(
             this,
             1,
@@ -595,9 +615,9 @@ class DriveTrackingService : Service() {
         )
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
-            .setContentTitle(if (store.isRecording()) "LaneGPS trip recording" else "LaneGPS Live View")
+            .setContentTitle(if (recording) "LaneGPS trip recording" else "LaneGPS Live View")
             .setContentText(
-                if (store.isRecording()) {
+                if (recording) {
                     "Trip recording + GNSS + lane matching active."
                 } else {
                     "Live sensing active · trip recording is OFF."
@@ -607,7 +627,7 @@ class DriveTrackingService : Service() {
             .addAction(
                 Notification.Action.Builder(
                     android.R.drawable.ic_media_pause,
-                    "STOP & SAVE",
+                    if (recording) "STOP & SAVE TRIP" else "STOP LIVE VIEW",
                     stopPendingIntent,
                 ).build()
             )
@@ -655,6 +675,7 @@ class DriveTrackingService : Service() {
         const val ACTION_START = "com.example.gps.action.START_DRIVE_TEST"
         const val ACTION_RESUME = "com.example.gps.action.RESUME_DRIVE_TEST"
         const val ACTION_STOP = "com.example.gps.action.STOP_DRIVE_TEST"
+        const val ACTION_STOP_RECORDING = "com.example.gps.action.STOP_TRIP_RECORDING"
         const val EXTRA_RESET = "reset_session"
 
         private const val CHANNEL_ID = "lane_gps_drive_test"
