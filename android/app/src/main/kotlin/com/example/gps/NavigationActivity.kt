@@ -841,30 +841,57 @@ private fun NavigationScreen(
     }
 
     val fixAge = state.lastUpdateMillis?.let { (nowMillis - it).coerceAtLeast(0L) }
-    val gpsStale = sessionActive && state.fixReceived && fixAge != null && fixAge > 3_000L
+    val gpsStale = sessionActive && (!state.fixReceived || (fixAge != null && fixAge > 3_000L))
+    val gpsWeak = sessionActive && !gpsStale && state.fixReceived && (
+        (state.accuracyMeters ?: Float.MAX_VALUE) > 10f ||
+            state.qualityScore < 70 ||
+            (state.satellitesUsedInFix in 1..4)
+    )
     val rawLaneCount = if (gpsStale) null else state.likelyLaneCount?.takeIf { it in 1..8 }
     var laneCount by remember { mutableStateOf<Int?>(null) }
     LaunchedEffect(rawLaneCount, gpsStale) {
-        if (gpsStale) {
-            laneCount = null
-        } else if (rawLaneCount != laneCount) {
-            // Cancel and restart when counts oscillate; retain only the diagram,
-            // never a current-lane highlight, while the new geometry settles.
+        if (!gpsStale && rawLaneCount != laneCount) {
+            // Require a short stable layout before changing the road graphic.
             kotlinx.coroutines.delay(1_500L)
             laneCount = rawLaneCount
         }
     }
-    val layoutSettling = laneCount != rawLaneCount
-    val laneNumber = if (gpsStale || layoutSettling) null
+    val layoutSettling = !gpsStale && laneCount != rawLaneCount
+    val liveLaneNumber = if (gpsStale || layoutSettling) null
         else state.likelyLaneNumberFromLeft
     val route = routeUi.summary
-    val targetLanes = remember(state.laneTurnHints, route?.nextManeuver, laneCount) {
+    val liveTargetLanes = remember(state.laneTurnHints, route?.nextManeuver, laneCount) {
         recommendedLaneNumbers(
             turnHints = state.laneTurnHints,
             maneuver = route?.nextManeuver,
             laneCount = laneCount,
         )
     }
+
+    // Preserve the last trustworthy lane picture through weak/lost GPS instead of
+    // letting one noisy fix jump the driver across lanes.
+    var frozenLaneCount by remember { mutableStateOf<Int?>(null) }
+    var frozenLaneNumber by remember { mutableStateOf<Int?>(null) }
+    var frozenTurnHints by remember { mutableStateOf<List<String>>(emptyList()) }
+    var frozenTargetLanes by remember { mutableStateOf<Set<Int>>(emptySet()) }
+    LaunchedEffect(
+        gpsWeak, gpsStale, layoutSettling, laneCount, liveLaneNumber,
+        state.laneTurnHints, liveTargetLanes,
+    ) {
+        if (!gpsWeak && !gpsStale && !layoutSettling && laneCount != null) {
+            frozenLaneCount = laneCount
+            if (liveLaneNumber != null && liveLaneNumber in 1..laneCount) {
+                frozenLaneNumber = liveLaneNumber
+            }
+            if (state.laneTurnHints.size == laneCount) frozenTurnHints = state.laneTurnHints
+            frozenTargetLanes = liveTargetLanes
+        }
+    }
+    val laneUncertain = gpsWeak || gpsStale
+    val displayLaneCount = if (laneUncertain) frozenLaneCount ?: laneCount else laneCount
+    val displayLaneNumber = if (laneUncertain) frozenLaneNumber else liveLaneNumber
+    val displayTurnHints = if (laneUncertain && frozenTurnHints.isNotEmpty()) frozenTurnHints else state.laneTurnHints
+    val displayTargetLanes = if (laneUncertain) frozenTargetLanes else liveTargetLanes
 
     BoxWithConstraints(Modifier.fillMaxSize().background(NavBg)) {
         val wide = maxWidth >= 600.dp
@@ -908,7 +935,18 @@ private fun NavigationScreen(
                     routeUi.error?.let { Text(it, color = NavAmber, fontSize = 12.sp, maxLines = 2) }
                 }
             }
-            CompactLaneOverlay(state, laneNumber, laneCount, gpsStale, layoutSettling, sessionActive, route, targetLanes)
+            CompactLaneOverlay(
+                state = state,
+                laneNumber = displayLaneNumber,
+                laneCount = displayLaneCount,
+                stale = gpsStale,
+                weak = gpsWeak,
+                settling = layoutSettling,
+                active = sessionActive,
+                route = route,
+                targetLanes = displayTargetLanes,
+                turnHints = displayTurnHints,
+            )
         }
         Surface(
             modifier = Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(8.dp)
