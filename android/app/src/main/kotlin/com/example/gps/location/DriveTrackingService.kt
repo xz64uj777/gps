@@ -381,6 +381,16 @@ class DriveTrackingService : Service() {
             physical.mergedSegments -> "CARRIAGEWAY_GROUP"
             else -> "STABILITY_OR_TRANSITION"
         }
+        val turnHints = if (!physical.mergedSegments) {
+            allLanes
+                .filter { it.segmentId == topLane.segmentId }
+                .sortedBy { it.index }
+                .takeIf { it.size == physical.laneCount }
+                ?.map { lane -> lane.turns.sorted().joinToString(";") }
+                .orEmpty()
+        } else {
+            emptyList()
+        }
         val statusCore = when {
             accuracy > 5f -> "UNCERTAIN · GNSS ${"%.1f".format(accuracy)} m"
             exact -> "EXACT-LANE CLAIM READY"
@@ -399,6 +409,7 @@ class DriveTrackingService : Service() {
             candidateCount = lanes.size,
             laneNumberFromLeft = physical.laneNumberFromLeft,
             laneCount = physical.laneCount,
+            turnHints = turnHints,
             confidence = estimate.confidence.toFloat(),
             exactClaim = exact,
         )
@@ -412,6 +423,7 @@ class DriveTrackingService : Service() {
                 laneCandidateCount = 0,
                 likelyLaneNumberFromLeft = null,
                 likelyLaneCount = null,
+                laneTurnHints = emptyList(),
                 laneConfidence = 0f,
                 laneExactClaim = false,
                 sensorLaneReady = false,
@@ -423,6 +435,7 @@ class DriveTrackingService : Service() {
             laneCandidateCount = overlay.candidateCount,
             likelyLaneNumberFromLeft = overlay.laneNumberFromLeft,
             likelyLaneCount = overlay.laneCount,
+            laneTurnHints = overlay.turnHints,
             laneConfidence = overlay.confidence,
             laneExactClaim = overlay.exactClaim,
         )
@@ -567,6 +580,7 @@ class DriveTrackingService : Service() {
         val candidateCount: Int = 0,
         val laneNumberFromLeft: Int? = null,
         val laneCount: Int? = null,
+        val turnHints: List<String> = emptyList(),
         val confidence: Float = 0f,
         val exactClaim: Boolean = false,
     )

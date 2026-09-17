@@ -9,6 +9,7 @@ data class Lane(
     val widthMeters: Double = 3.6,
     val changeLeft: Boolean = true,
     val changeRight: Boolean = true,
+    val turns: Set<String> = emptySet(),
     val sourceConfidence: Double = 1.0,
 )
 data class LaneConnection(

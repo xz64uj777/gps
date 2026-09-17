@@ -53,6 +53,7 @@ data class GnssUiState(
     val laneCandidateCount: Int = 0,
     val likelyLaneNumberFromLeft: Int? = null,
     val likelyLaneCount: Int? = null,
+    val laneTurnHints: List<String> = emptyList(),
     val laneConfidence: Float = 0f,
     val laneExactClaim: Boolean = false,
     val sessionSamples: Int = 0,

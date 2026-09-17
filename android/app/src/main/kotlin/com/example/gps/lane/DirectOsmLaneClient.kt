@@ -255,10 +255,20 @@ class DirectOsmLaneClient(
 
         return List(count) { index ->
             val change = changeValues.getOrNull(index)?.trim().orEmpty()
+            val turns = if (explicitTurns) {
+                turnValues.getOrNull(index).orEmpty()
+                    .split(';')
+                    .map { it.trim().lowercase(java.util.Locale.ROOT) }
+                    .filter { it.isNotEmpty() && it != "none" }
+                    .toSet()
+            } else {
+                emptySet()
+            }
             LaneSpec(
                 index = index,
                 changeLeft = change !in setOf("no", "not_left"),
                 changeRight = change !in setOf("no", "not_right"),
+                turns = turns,
                 confidence = confidence,
             )
         }
@@ -287,6 +297,7 @@ class DirectOsmLaneClient(
                 widthMeters = DEFAULT_LANE_WIDTH_M,
                 changeLeft = spec.changeLeft,
                 changeRight = spec.changeRight,
+                turns = spec.turns,
                 sourceConfidence = spec.confidence,
             )
         }
@@ -322,6 +333,7 @@ class DirectOsmLaneClient(
         val index: Int,
         val changeLeft: Boolean,
         val changeRight: Boolean,
+        val turns: Set<String>,
         val confidence: Double,
     )
 
