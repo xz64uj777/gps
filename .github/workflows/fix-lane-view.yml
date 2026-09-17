@@ -31,12 +31,10 @@ jobs:
           path = Path('android/app/src/main/kotlin/com/example/gps/NavigationActivity.kt')
           text = path.read_text()
 
-          old_gate = '''    val laneNumber = if (gpsStale || layoutSettling || !state.laneExactClaim) null
-              else state.likelyLaneNumberFromLeft'''.replace('              else', '        else')
-          new_gate = '''    val laneNumber = if (gpsStale || layoutSettling) null
-              else state.likelyLaneNumberFromLeft'''.replace('              else', '        else')
+          old_gate = 'if (gpsStale || layoutSettling || !state.laneExactClaim) null'
+          new_gate = 'if (gpsStale || layoutSettling) null'
           if old_gate not in text:
-              raise SystemExit('laneNumber gate block not found')
+              raise SystemExit('laneNumber gate expression not found')
           text = text.replace(old_gate, new_gate, 1)
 
           start = text.index('@Composable\nprivate fun CompactLaneOverlay')
