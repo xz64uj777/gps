@@ -19,6 +19,15 @@ class DriveSessionStore(context: Context) {
         prefs.edit().putBoolean(KEY_RECORDING, recording).apply()
     }
 
+    /** Start a clean CSV when an already-running Live View becomes a real trip. */
+    fun beginRecordingSession() {
+        telemetry.startNew()
+        prefs.edit()
+            .remove(KEY_LOG_EXPORTED)
+            .remove(KEY_LOG_EXPORTED_NAME)
+            .commit()
+    }
+
     fun clearSession() {
         prefs.edit().clear().commit()
         telemetry.startNew()
