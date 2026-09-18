@@ -748,9 +748,9 @@ class NavigationActivity : ComponentActivity() {
         const val POSITION_LAYER_ID = "lanegps-position-layer"
         const val DESTINATION_SOURCE_ID = "lanegps-destination-source"
         const val DESTINATION_LAYER_ID = "lanegps-destination-layer"
-        const val OFF_ROUTE_REROUTE_METERS = 55.0
-        const val OFF_ROUTE_FIXES_REQUIRED = 3
-        const val REROUTE_COOLDOWN_MS = 12_000L
+        const val OFF_ROUTE_REROUTE_METERS = 75.0
+        const val OFF_ROUTE_FIXES_REQUIRED = 5
+        const val REROUTE_COOLDOWN_MS = 30_000L
     }
 }
 
