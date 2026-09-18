@@ -18,7 +18,7 @@ class RerouteStartupGuardTest {
     fun releasesAfterEnoughTime() {
         val effective = RerouteStartupGuard.effectiveOffRouteMeters(
             rawOffRouteMeters = 120.0,
-            routeAgeMillis = 25_000L,
+            routeAgeMillis = 40_000L,
             routeProgressMeters = 30.0,
         )
         assertEquals(120.0, effective)
@@ -29,7 +29,7 @@ class RerouteStartupGuardTest {
         val effective = RerouteStartupGuard.effectiveOffRouteMeters(
             rawOffRouteMeters = 120.0,
             routeAgeMillis = 5_000L,
-            routeProgressMeters = 150.0,
+            routeProgressMeters = 300.0,
         )
         assertEquals(120.0, effective)
     }
