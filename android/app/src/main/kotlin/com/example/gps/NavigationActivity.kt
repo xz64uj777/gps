@@ -980,6 +980,34 @@ private fun NavigationScreen(
     val displayTurnHints = if (laneUncertain && frozenTurnHints.isNotEmpty()) frozenTurnHints else state.laneTurnHints
     val displayTargetLanes = if (laneUncertain) frozenTargetLanes else stableTargetLanes
 
+    // Keep the most recent exact confirmation visible briefly as historical
+    // evidence. It is never treated as a current exact claim after the gate drops.
+    var lastConfirmedLane by remember { mutableStateOf<Int?>(null) }
+    var lastConfirmedLaneCount by remember { mutableStateOf<Int?>(null) }
+    var lastConfirmedAtMillis by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(
+        state.laneExactClaim,
+        state.likelyLaneNumberFromLeft,
+        state.likelyLaneCount,
+        state.lastUpdateMillis,
+    ) {
+        val confirmedLane = state.likelyLaneNumberFromLeft
+        val confirmedCount = state.likelyLaneCount
+        if (state.laneExactClaim && confirmedLane != null && confirmedCount != null &&
+            confirmedLane in 1..confirmedCount) {
+            lastConfirmedLane = confirmedLane
+            lastConfirmedLaneCount = confirmedCount
+            lastConfirmedAtMillis = System.currentTimeMillis()
+        }
+    }
+    val lastConfirmedAgeMillis = (nowMillis - lastConfirmedAtMillis)
+        .takeIf { lastConfirmedAtMillis > 0L && it in 0..15_000L }
+    val recentConfirmedLane = lastConfirmedLane.takeIf {
+        lastConfirmedAgeMillis != null &&
+            lastConfirmedLaneCount != null &&
+            lastConfirmedLaneCount == displayLaneCount
+    }
+
     BoxWithConstraints(Modifier.fillMaxSize().background(NavBg)) {
         val wide = maxWidth >= 600.dp
         AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize())
@@ -1033,6 +1061,8 @@ private fun NavigationScreen(
                 route = route,
                 targetLanes = displayTargetLanes,
                 turnHints = displayTurnHints,
+                recentConfirmedLane = recentConfirmedLane,
+                recentConfirmedAgeMillis = lastConfirmedAgeMillis,
             )
         }
         Surface(
@@ -1129,6 +1159,8 @@ private fun CompactLaneOverlay(
     route: OpenRouteClient.RouteSummary?,
     targetLanes: Set<Int>,
     turnHints: List<String>,
+    recentConfirmedLane: Int?,
+    recentConfirmedAgeMillis: Long?,
 ) {
     val uncertain = stale || weak
     val laneKnown = active &&
@@ -1164,6 +1196,8 @@ private fun CompactLaneOverlay(
                         settling -> "UPDATING ROAD LANES"
                         targetTitle != null -> targetTitle
                         exact -> "LANE $laneNumber OF $laneCount · CONFIRMED"
+                        recentConfirmedLane != null && laneCount != null ->
+                            "LAST CONFIRMED LANE $recentConfirmedLane OF $laneCount · ${(recentConfirmedAgeMillis ?: 0L) / 1000}s AGO"
                         likely -> "LIKELY LANE $laneNumber OF $laneCount · $confidence%"
                         laneCount != null -> "$laneCount LANES · POSITION UNCERTAIN"
                         state.laneCandidateCount > 0 -> "ROAD FOUND · RESOLVING LANES"
@@ -1218,6 +1252,8 @@ private fun CompactLaneOverlay(
                         !state.fixReceived -> "Waiting for a GPS fix. Live View is already running."
                         stale -> "GPS lost. The last trustworthy lane picture is frozen instead of jumping."
                         weak -> "GPS is weak. LaneGPS is holding the last good lane picture until readings settle."
+                        recentConfirmedLane != null && !exact ->
+                            "Lane $recentConfirmedLane was recently confirmed; current GPS no longer meets the exact-lane gate."
                         targetLanes.isNotEmpty() && exact && laneNumber != null ->
                             laneMoveAdvice(laneNumber, targetLanes) + " · Blue = route lane; green = confirmed car."
                         targetLanes.isNotEmpty() ->
