@@ -414,7 +414,34 @@ class DriveTrackingService : Service() {
             return mergeLaneOverlay(state)
         }
 
-        val lanes = nearby.map { it.lane }
+        // Match lanes within one plausible OSM road segment. The previous matcher
+        // normalized across every nearby lane from ramps, frontage roads and
+        // intersections; on a 4-lane road that made exact confidence effectively
+        // impossible. Keep a separate ambiguity gate so we still refuse an exact
+        // claim when two road segments are too close to distinguish safely.
+        data class SegmentCandidate(
+            val segmentId: String,
+            val scoreMeters: Double,
+        )
+        val segmentRanking = nearby
+            .groupBy { it.lane.segmentId }
+            .map { (segmentId, candidates) ->
+                val best = candidates.minOf { candidate ->
+                    candidate.distanceMeters + candidate.headingErrorDegrees * 0.05
+                }
+                SegmentCandidate(segmentId, best)
+            }
+            .sortedBy { it.scoreMeters }
+        val chosenSegment = segmentRanking.first().segmentId
+        val runnerSegment = segmentRanking.getOrNull(1)
+        val ambiguityMargin = maxOf(2.5, accuracy.toDouble() * 0.75)
+        val segmentAmbiguous =
+            runnerSegment != null &&
+                runnerSegment.scoreMeters - segmentRanking.first().scoreMeters < ambiguityMargin
+
+        val lanes = nearby
+            .filter { it.lane.segmentId == chosenSegment }
+            .map { it.lane }
         val estimate = synchronized(laneLock) {
             laneMatcher.update(
                 observation = Observation(
@@ -449,11 +476,13 @@ class DriveTrackingService : Service() {
             estimate.claimExactLane &&
                 state.sensorLaneReady &&
                 accuracy <= 5f &&
+                !segmentAmbiguous &&
                 !physical.mergedSegments
         val exactBlocker = when {
             exact -> "READY"
             accuracy > 5f -> "GNSS_ACCURACY"
             !state.sensorLaneReady -> "SENSOR_GATE"
+            segmentAmbiguous -> "ROAD_AMBIGUITY"
             topLane.sourceConfidence < EXACT_SOURCE_CONFIDENCE_MIN -> "MAP_SOURCE"
             estimate.confidence < EXACT_MATCH_CONFIDENCE_MIN -> "MATCH_CONFIDENCE"
             physical.mergedSegments -> "CARRIAGEWAY_GROUP"
