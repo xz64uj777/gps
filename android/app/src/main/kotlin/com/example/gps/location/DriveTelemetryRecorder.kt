@@ -43,7 +43,7 @@ class DriveTelemetryRecorder(context: Context) {
         val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
         val displayName = "LaneGPS-drive-$timestamp.csv"
         val resolver = appContext.contentResolver
-        val relativeFolder = "${Environment.DIRECTORY_DOWNLOADS}/LaneGPS"
+        val relativeFolder = "${Environment.DIRECTORY_DOWNLOADS}/LaneGPS/"
         val exportFile = buildTrimmedExportFile()
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
