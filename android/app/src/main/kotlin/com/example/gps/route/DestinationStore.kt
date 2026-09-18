@@ -11,9 +11,13 @@ class DestinationStore(context: Context) {
 
     fun saved(): List<String> = readList(KEY_SAVED)
 
-    fun home(): String? = prefs.getString(KEY_HOME, null)?.trim()?.takeIf { it.isNotBlank() }
+    fun home(): String? = prefs.getString(KEY_HOME, null)
+        ?.let(::normalizeDestinationLabel)
+        ?.takeIf { it.isNotBlank() }
 
-    fun work(): String? = prefs.getString(KEY_WORK, null)?.trim()?.takeIf { it.isNotBlank() }
+    fun work(): String? = prefs.getString(KEY_WORK, null)
+        ?.let(::normalizeDestinationLabel)
+        ?.takeIf { it.isNotBlank() }
 
     fun setHome(label: String) {
         writeQuick(KEY_HOME, label)
@@ -32,7 +36,7 @@ class DestinationStore(context: Context) {
     }
 
     fun addRecent(label: String) {
-        val clean = label.trim()
+        val clean = normalizeDestinationLabel(label)
         if (clean.isBlank()) return
         val next = (listOf(clean) + recent().filterNot { it.equals(clean, ignoreCase = true) })
             .take(MAX_RECENTS)
@@ -40,7 +44,7 @@ class DestinationStore(context: Context) {
     }
 
     fun toggleSaved(label: String): Boolean {
-        val clean = label.trim()
+        val clean = normalizeDestinationLabel(label)
         if (clean.isBlank()) return false
         val current = saved().toMutableList()
         val existing = current.indexOfFirst { it.equals(clean, ignoreCase = true) }
@@ -88,7 +92,7 @@ class DestinationStore(context: Context) {
     }
 
     private fun writeQuick(key: String, label: String) {
-        val clean = label.trim()
+        val clean = normalizeDestinationLabel(label)
         if (clean.isBlank()) return
         prefs.edit().putString(key, clean).apply()
         addRecent(clean)
@@ -100,10 +104,24 @@ class DestinationStore(context: Context) {
             val array = JSONArray(raw)
             buildList {
                 for (index in 0 until array.length()) {
-                    array.optString(index).trim().takeIf { it.isNotBlank() }?.let(::add)
+                    normalizeDestinationLabel(array.optString(index)).takeIf { it.isNotBlank() }?.let(::add)
                 }
             }
         }.getOrDefault(emptyList())
+    }
+
+    private fun normalizeDestinationLabel(label: String): String {
+        val parts = label.split(',')
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+        if (parts.isEmpty()) return ""
+        val collapsed = mutableListOf<String>()
+        parts.forEach { part ->
+            if (collapsed.lastOrNull()?.equals(part, ignoreCase = true) != true) {
+                collapsed += part
+            }
+        }
+        return collapsed.joinToString(", ")
     }
 
     private fun writeList(key: String, values: List<String>) {
