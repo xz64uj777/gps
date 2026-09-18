@@ -273,11 +273,14 @@ class NavigationActivity : ComponentActivity() {
         sessionActive = store.isActive()
         recordingActive = store.isRecording()
         DriveSessionRuntime.addListener(runtimeListener)
-        if (!liveViewStoppedByUser && !pendingStart && (routeUi.summary != null || recordingActive)) {
+        if (!liveViewStoppedByUser && !pendingStart) {
             if (hasFineLocationPermission()) {
-                // Resume only an intentional navigation/recording session.
-                // Standalone Live View now starts only when the driver asks for it.
-                resumeDrive()
+                // Keep Live View automatic, but sensing-only. A selected route
+                // promotes the session to recording; standalone Live View does not.
+                ensureLiveView()
+            } else if (!locationPromptedThisVisit) {
+                locationPromptedThisVisit = true
+                requestDrivePermissions(true)
             }
         }
     }
