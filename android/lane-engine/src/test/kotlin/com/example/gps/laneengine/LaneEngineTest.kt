@@ -91,6 +91,40 @@ class LaneEngineTest {
     }
 
     @Test
+    fun clearMultilaneFixCanConfirmAfterStableDistinctSamples() {
+        val lanes = threeParallelLanes()
+        val matcher = LaneMatcher()
+
+        val estimates = (1L..3L).map { timestamp ->
+            matcher.update(
+                Observation(timestamp, lanePoint(1), 2.0, 20.0, 0.0),
+                lanes,
+            )
+        }
+
+        assertEquals("L2", estimates.last().mostLikelyLaneId)
+        assertTrue(estimates.last().claimExactLane)
+        assertTrue(estimates.last().confidence >= 0.70)
+    }
+
+    @Test
+    fun laneBoundaryAmbiguityDoesNotClaimExact() {
+        val lanes = threeParallelLanes()
+        val matcher = LaneMatcher()
+        val boundaryPoint = GeoPoint(40.0005, -74.00002)
+
+        val estimates = (1L..5L).map { timestamp ->
+            matcher.update(
+                Observation(timestamp, boundaryPoint, 2.0, 20.0, 0.0),
+                lanes,
+            )
+        }
+
+        assertFalse(estimates.last().claimExactLane)
+        assertTrue(estimates.last().confidence < 0.70)
+    }
+
+    @Test
     fun oneAdjacentNoiseFixDoesNotFlipLane() {
         val lanes = threeParallelLanes()
         val matcher = LaneMatcher()
