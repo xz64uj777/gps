@@ -868,6 +868,34 @@ private fun NavigationScreen(
         )
     }
 
+    // OSM turn:lanes can appear only on the final tagged approach segment. Hold a
+    // valid recommendation through short gaps on the same maneuver/road layout so
+    // the target lane does not flash on for one or two fixes and disappear again.
+    var rememberedTargetManeuver by remember { mutableStateOf<String?>(null) }
+    var rememberedTargetLaneCount by remember { mutableStateOf<Int?>(null) }
+    var rememberedTargetLanes by remember { mutableStateOf<Set<Int>>(emptySet()) }
+    LaunchedEffect(route?.routeStartedAtMillis, route?.nextManeuver, laneCount, liveTargetLanes) {
+        val maneuverKey = route?.let { "${it.routeStartedAtMillis}|${it.nextManeuver}" }
+        if (maneuverKey != rememberedTargetManeuver) {
+            rememberedTargetManeuver = maneuverKey
+            rememberedTargetLaneCount = null
+            rememberedTargetLanes = emptySet()
+        }
+        if (liveTargetLanes.isNotEmpty() && laneCount != null) {
+            rememberedTargetLaneCount = laneCount
+            rememberedTargetLanes = liveTargetLanes
+        } else if (laneCount != null && rememberedTargetLaneCount != null &&
+            laneCount != rememberedTargetLaneCount) {
+            rememberedTargetLaneCount = null
+            rememberedTargetLanes = emptySet()
+        }
+    }
+    val stableTargetLanes = when {
+        liveTargetLanes.isNotEmpty() -> liveTargetLanes
+        laneCount != null && laneCount == rememberedTargetLaneCount -> rememberedTargetLanes
+        else -> emptySet()
+    }
+
     // Preserve the last trustworthy lane picture through weak/lost GPS instead of
     // letting one noisy fix jump the driver across lanes.
     var frozenLaneCount by remember { mutableStateOf<Int?>(null) }
@@ -876,7 +904,7 @@ private fun NavigationScreen(
     var frozenTargetLanes by remember { mutableStateOf<Set<Int>>(emptySet()) }
     LaunchedEffect(
         gpsWeak, gpsStale, layoutSettling, laneCount, liveLaneNumber,
-        state.laneTurnHints, liveTargetLanes,
+        state.laneTurnHints, stableTargetLanes,
     ) {
         val stableLaneCount = laneCount
         if (!gpsWeak && !gpsStale && !layoutSettling && stableLaneCount != null) {
@@ -885,14 +913,14 @@ private fun NavigationScreen(
                 frozenLaneNumber = liveLaneNumber
             }
             if (state.laneTurnHints.size == stableLaneCount) frozenTurnHints = state.laneTurnHints
-            frozenTargetLanes = liveTargetLanes
+            frozenTargetLanes = stableTargetLanes
         }
     }
     val laneUncertain = gpsWeak || gpsStale
     val displayLaneCount = if (laneUncertain) frozenLaneCount ?: laneCount else laneCount
     val displayLaneNumber = if (laneUncertain) frozenLaneNumber else liveLaneNumber
     val displayTurnHints = if (laneUncertain && frozenTurnHints.isNotEmpty()) frozenTurnHints else state.laneTurnHints
-    val displayTargetLanes = if (laneUncertain) frozenTargetLanes else liveTargetLanes
+    val displayTargetLanes = if (laneUncertain) frozenTargetLanes else stableTargetLanes
 
     BoxWithConstraints(Modifier.fillMaxSize().background(NavBg)) {
         val wide = maxWidth >= 600.dp
