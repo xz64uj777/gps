@@ -649,7 +649,8 @@ class NavigationActivity : ComponentActivity() {
         if (!forceCamera && timestamp == lastMapFixTimestamp) return
         val previousTimestamp = lastMapFixTimestamp
         lastMapFixTimestamp = timestamp
-        val target = LatLng(state.latitude!!, state.longitude!!)
+        val rawTarget = LatLng(state.latitude!!, state.longitude!!)
+        val target = route?.let { snapDisplayPointToRoute(rawTarget, state.accuracyMeters, it) } ?: rawTarget
         // Browsing is sticky: fresh fixes, route changes and resume can update
         // overlays and the position marker, but only Recenter re-enables follow.
         if (!followingLocation) {
@@ -705,6 +706,63 @@ class NavigationActivity : ComponentActivity() {
             }
             start()
         }
+    }
+
+    /**
+     * Visual map matching only. Navigation/lane evidence still uses the raw GNSS fix.
+     * When a route is active and the raw fix is reasonably close to it, project the
+     * displayed marker/camera onto the local route segment so a 8–15 m phone GPS
+     * offset does not make the car appear beside the road.
+     */
+    private fun snapDisplayPointToRoute(
+        raw: LatLng,
+        accuracyMeters: Float?,
+        route: OpenRouteClient.RouteSummary,
+    ): LatLng {
+        val points = route.geometry
+        if (points.size < 2) return raw
+
+        val start = (route.progressIndex - 6).coerceAtLeast(0).coerceAtMost(points.lastIndex - 1)
+        val end = (route.progressIndex + 80).coerceAtMost(points.lastIndex)
+        if (end <= start) return raw
+
+        val earth = 6_371_000.0
+        val lat0 = raw.latitude * kotlin.math.PI / 180.0
+        val cosLat = kotlin.math.cos(lat0).coerceAtLeast(0.01)
+
+        fun xy(point: OpenRouteClient.RoutePoint): Pair<Double, Double> {
+            val east = (point.lon - raw.longitude) * kotlin.math.PI / 180.0 * earth * cosLat
+            val north = (point.lat - raw.latitude) * kotlin.math.PI / 180.0 * earth
+            return east to north
+        }
+
+        var bestDistance = Double.POSITIVE_INFINITY
+        var bestEast = 0.0
+        var bestNorth = 0.0
+        for (i in start until end) {
+            val (ax, ay) = xy(points[i])
+            val (bx, by) = xy(points[i + 1])
+            val dx = bx - ax
+            val dy = by - ay
+            val denom = dx * dx + dy * dy
+            val t = if (denom <= 1e-9) 0.0 else ((-ax * dx - ay * dy) / denom).coerceIn(0.0, 1.0)
+            val east = ax + t * dx
+            val north = ay + t * dy
+            val distance = kotlin.math.hypot(east, north)
+            if (distance < bestDistance) {
+                bestDistance = distance
+                bestEast = east
+                bestNorth = north
+            }
+        }
+
+        val maxSnapMeters = maxOf(22.0, (accuracyMeters?.toDouble() ?: 8.0) * 2.2)
+            .coerceAtMost(45.0)
+        if (!bestDistance.isFinite() || bestDistance > maxSnapMeters) return raw
+
+        val snappedLat = raw.latitude + (bestNorth / earth) * 180.0 / kotlin.math.PI
+        val snappedLon = raw.longitude + (bestEast / (earth * cosLat)) * 180.0 / kotlin.math.PI
+        return LatLng(snappedLat, snappedLon)
     }
 
     private fun routeFeatureCollection(points: List<OpenRouteClient.RoutePoint>): String {
