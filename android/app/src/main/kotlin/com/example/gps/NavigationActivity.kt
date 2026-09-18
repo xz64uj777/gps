@@ -107,6 +107,8 @@ class NavigationActivity : ComponentActivity() {
     private val routeExecutor = Executors.newSingleThreadExecutor()
 
     private lateinit var mapView: MapView
+    private var trafficStatus by mutableStateOf("Traffic · setup in Options")
+    private val trafficOverlay by lazy { com.example.gps.traffic.TrafficOverlay(this) { trafficStatus = it } }
     private var map: MapLibreMap? = null
     private var mapStyleReady = false
     private var lastMapFixTimestamp: Long? = null
@@ -203,6 +205,7 @@ class NavigationActivity : ComponentActivity() {
             readyMap.uiSettings.setLogoMargins((8 * density).toInt(), 0, 0, (220 * density).toInt())
             readyMap.setStyle(MAP_STYLE_URI) { style ->
                 installNavigationLayers(style)
+                trafficOverlay.attach(readyMap)
                 mapStyleReady = true
                 routeLayersInitialized = false
                 updateMapFromState(uiState, routeUi.summary, forceCamera = true)
@@ -222,6 +225,8 @@ class NavigationActivity : ComponentActivity() {
                     state = uiState,
                     sessionActive = sessionActive,
                     recordingActive = recordingActive,
+                    trafficStatus = trafficStatus,
+                    onTrafficChanged = { trafficOverlay.reload() },
                     followingLocation = followingLocation,
                     onRecenter = {
                         followingLocation = true
@@ -288,6 +293,7 @@ class NavigationActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         mapView.onResume()
+        trafficOverlay.resume()
         mapResumed = true
         updateMapFromState(uiState, routeUi.summary, forceCamera = true)
     }
@@ -295,6 +301,7 @@ class NavigationActivity : ComponentActivity() {
     override fun onPause() {
         mapResumed = false
         followAnimator?.cancel()
+        trafficOverlay.pause()
         mapView.onPause()
         super.onPause()
     }
@@ -342,6 +349,7 @@ class NavigationActivity : ComponentActivity() {
     override fun onDestroy() {
         routeGeneration++
         routeExecutor.shutdownNow()
+        trafficOverlay.destroy()
         mapView.onDestroy()
         super.onDestroy()
     }
@@ -869,6 +877,8 @@ private fun NavigationScreen(
     state: GnssUiState,
     sessionActive: Boolean,
     recordingActive: Boolean,
+    trafficStatus: String,
+    onTrafficChanged: () -> Unit,
     followingLocation: Boolean,
     onRecenter: () -> Unit,
     query: String,
@@ -886,7 +896,8 @@ private fun NavigationScreen(
     onOpenDiagnostics: () -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    var showDestination by rememberSaveable { mutableStateOf(false) }
+    var showOptions by rememberSaveable { mutableStateOf(false) }
+    var editingDestination by remember { mutableStateOf(false) }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
     var voiceState by remember {
         mutableStateOf(
@@ -1063,6 +1074,7 @@ private fun NavigationScreen(
     BoxWithConstraints(Modifier.fillMaxSize().background(NavBg)) {
         val wide = maxWidth >= 600.dp
         AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize())
+        if (!editingDestination) {
         Column(
             Modifier.align(Alignment.TopStart).windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
                 .padding(start = 8.dp, top = 8.dp, end = 64.dp, bottom = 8.dp).widthIn(max = if (wide) 390.dp else 540.dp).fillMaxWidth(),
@@ -1117,12 +1129,17 @@ private fun NavigationScreen(
                 recentConfirmedAgeMillis = lastConfirmedAgeMillis,
             )
         }
+        }
         Surface(
-            modifier = Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(8.dp)
+            modifier = Modifier.align(Alignment.BottomEnd).navigationBarsPadding().imePadding().padding(8.dp)
                 .widthIn(max = if (wide) 390.dp else 540.dp).fillMaxWidth(),
             color = NavCard, shape = RoundedCornerShape(16.dp),
         ) {
-            Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Column(Modifier.heightIn(max = maxHeight * 0.52f).verticalScroll(rememberScrollState()).padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                DestinationCard(voiceController, voiceState, query, routeUi, sessionActive,
+                    onQueryChange, onQuickRoute, onClearRoute, onPrimaryAction, { editingDestination = it })
+                Text(trafficStatus, color = NavMuted, fontSize = 11.sp)
+
                 if (!followingLocation) {
                     Button(onClick = onRecenter, modifier = Modifier.fillMaxWidth()) {
                         Text("RECENTER · FOLLOW ME", fontWeight = FontWeight.Bold)
@@ -1134,8 +1151,8 @@ private fun NavigationScreen(
                     color = Color.White, fontWeight = FontWeight.Bold, fontSize = 17.sp,
                 )
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    OutlinedButton(onClick = { showDestination = true }, modifier = Modifier.weight(1f)) {
-                        Text("Search / options", maxLines = 1)
+                    OutlinedButton(onClick = { showOptions = true }, modifier = Modifier.weight(1f)) {
+                        Text("Options", maxLines = 1)
                     }
                     OutlinedButton(onClick = { voiceController.cycleMode() }) {
                         Text(voiceState.mode.label)
@@ -1174,25 +1191,24 @@ private fun NavigationScreen(
             }
         }
     }
-    if (showDestination) {
-        Dialog(onDismissRequest = { showDestination = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    if (showOptions) {
+        Dialog(onDismissRequest = { showOptions = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
             Surface(Modifier.fillMaxSize().systemBarsPadding().imePadding(), color = NavBg) {
                 Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp)) {
-                    TextButton(onClick = { showDestination = false }) { Text("BACK TO MAP") }
-                    DestinationCard(
-                        voiceController = voiceController, voiceState = voiceState,
-                        query = query, routeUi = routeUi, sessionActive = sessionActive,
-                        onQueryChange = onQueryChange,
-                        onQuickRoute = { showDestination = false; onQuickRoute(it) },
-                        onClearRoute = onClearRoute,
-                        onPrimaryAction = { showDestination = false; onPrimaryAction() },
-                    )
+                    TextButton(onClick = { showOptions = false }) { Text("BACK TO MAP") }
+                    Text("Options", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                    VoiceOptions(voiceController, voiceState)
+                    TrafficOptions(onTrafficChanged)
                     if (!state.permissionFine && !sessionActive) {
                         TextButton(onClick = onEnableLocation) { Text("Enable precise location") }
                     }
                     Text("Normal voice: fewer turn cues, with an extra early highway-exit warning.", color = NavMuted, fontSize = 13.sp)
-                    Text("Live traffic is not connected. Travel times do not include live congestion.", color = NavMuted, fontSize = 13.sp)
-                    TextButton(onClick = onOpenDiagnostics) { Text("Diagnostics & Trip Lab") }
+
+                    HorizontalDivider()
+                    Text("GPS diagnostics", color = Color.White, fontWeight = FontWeight.Bold)
+                    Text("Accuracy: ${state.accuracyMeters?.roundToInt()?.let { "±$it m" } ?: "waiting"} · Satellites: ${state.satellitesUsedInFix}", color = NavMuted)
+                    Text(state.laneDataStatus, color = NavMuted, fontSize = 12.sp)
+                    Text("Trip logs are saved in Downloads/LaneGPS.", color = NavMuted, fontSize = 12.sp)
                 }
             }
         }
@@ -1865,10 +1881,9 @@ private fun DestinationCard(
     onQuickRoute: (String) -> Unit,
     onClearRoute: () -> Unit,
     onPrimaryAction: () -> Unit,
+    onEditingChanged: (Boolean) -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    var voiceMenuExpanded by remember { mutableStateOf(false) }
-    var voiceGroup by remember { mutableStateOf<String?>(null) }
     val focusManager = LocalFocusManager.current
     val store = remember { DestinationStore(context.applicationContext) }
     val photon = remember { PhotonSearchClient() }
@@ -1908,10 +1923,6 @@ private fun DestinationCard(
         (localMatches.isNotEmpty() || remoteSuggestions.isNotEmpty() || searching)
     val quickCandidate = routeUi.summary?.destinationName?.trim()?.takeIf { it.isNotBlank() }
         ?: query.trim().takeIf { it.isNotBlank() }
-    val selectedVoiceLabel = voiceState.voices
-        .firstOrNull { it.id == voiceState.selectedVoiceId }
-        ?.let { if (it.group == "Defaults & effects") it.label else "${it.group} · ${it.label}" }
-        ?: "System default"
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -1919,23 +1930,20 @@ private fun DestinationCard(
         shape = RoundedCornerShape(18.dp),
     ) {
         Column(Modifier.padding(13.dp)) {
-            Text(
-                if (sessionActive) "Destination" else "Where are you going?",
-                color = Color.White,
-                fontWeight = FontWeight.Bold,
-                fontSize = 16.sp,
+            OutlinedTextField(
+                value = query,
+                onValueChange = onQueryChange,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onFocusChanged { queryFocused = it.isFocused; onEditingChanged(it.isFocused) },
+                singleLine = true,
+                placeholder = { Text("Address, place or business") },
+                trailingIcon = { TextButton(onClick = { focusManager.clearFocus(); onPrimaryAction() },
+                    enabled = query.isNotBlank() && !routeUi.planning) { Text(if (routeUi.planning) "…" else "GO") } },
+                enabled = !routeUi.planning,
             )
-            Text(
-                if (sessionActive) {
-                    "Change this only while parked."
-                } else {
-                    "Enter a destination, or leave blank for Live View."
-                },
-                color = NavMuted,
-                fontSize = 10.sp,
-            )
-            Spacer(Modifier.height(7.dp))
 
+            if (queryFocused) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                 OutlinedButton(
                     onClick = {
@@ -1972,70 +1980,8 @@ private fun DestinationCard(
             }
 
             Spacer(Modifier.height(7.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                OutlinedButton(
-                    onClick = { voiceController.cycleMode() },
-                    enabled = voiceState.ready,
-                    modifier = Modifier.weight(0.8f),
-                ) {
-                    Text(
-                        when {
-                            !voiceState.ready -> "VOICE…"
-                            else -> voiceState.mode.label
-                        },
-                        maxLines = 1,
-                    )
-                }
-                Box(Modifier.weight(1.2f)) {
-                    OutlinedButton(
-                        onClick = { voiceGroup = null; voiceMenuExpanded = true },
-                        enabled = voiceState.ready && voiceState.voices.isNotEmpty(),
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(selectedVoiceLabel, maxLines = 1)
-                    }
-                    DropdownMenu(
-                        expanded = voiceMenuExpanded,
-                        onDismissRequest = { voiceMenuExpanded = false },
-                    ) {
-                        if (voiceGroup == null) {
-                            voiceState.voices.map { it.group }.distinct().forEach { group ->
-                                DropdownMenuItem(text = { Text(group) }, onClick = { voiceGroup = group })
-                            }
-                        } else {
-                            DropdownMenuItem(text = { Text("‹ All languages / regions") }, onClick = { voiceGroup = null })
-                            voiceState.voices.filter { it.group == voiceGroup }.forEach { option ->
-                                DropdownMenuItem(
-                                    text = { Text(option.label) },
-                                    onClick = {
-                                        voiceController.selectVoice(option.id)
-                                        voiceMenuExpanded = false
-                                    },
-                                )
-                            }
-                        }
-                    }
-                }
-            }
 
-            TextButton(onClick = { voiceController.previewSelectedVoice() },
-                enabled = voiceState.ready && !voiceState.muted) {
-                Text(if (voiceState.muted) "Unmute to test voice" else "TEST SELECTED VOICE")
             }
-
-            Text("Alerts only: rerouting and arrival. No turn-by-turn speech.",
-                color = NavMuted, fontSize = 12.sp)
-            Spacer(Modifier.height(7.dp))
-            OutlinedTextField(
-                value = query,
-                onValueChange = onQueryChange,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .onFocusChanged { queryFocused = it.isFocused },
-                singleLine = true,
-                placeholder = { Text("Address, place or business") },
-                enabled = !routeUi.planning,
-            )
 
             if (showSuggestions && !routeUi.planning) {
                 Spacer(Modifier.height(6.dp))
@@ -2044,7 +1990,7 @@ private fun DestinationCard(
                     shape = RoundedCornerShape(12.dp),
                     tonalElevation = 2.dp,
                 ) {
-                    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                    Column(Modifier.fillMaxWidth().heightIn(max = 180.dp).verticalScroll(rememberScrollState()).padding(vertical = 4.dp)) {
                         if (query.isBlank() && localMatches.isNotEmpty()) {
                             Text(
                                 "HOME · WORK · SAVED · RECENT",
@@ -2160,42 +2106,11 @@ private fun DestinationCard(
             }
 
             Spacer(Modifier.height(8.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = {
-                        focusManager.clearFocus()
-                        onPrimaryAction()
-                    },
-                    enabled = !routeUi.planning && (!sessionActive || query.isNotBlank()),
-                    modifier = Modifier.weight(1f).height(52.dp),
-                ) {
-                    Text(
-                        when {
-                            routeUi.planning -> "BUILDING ROUTE…"
-                            sessionActive -> "ROUTE TO THIS"
-                            query.isBlank() -> "START LIVE VIEW"
-                            else -> "START NAVIGATION"
-                        },
-                        fontWeight = FontWeight.ExtraBold,
-                    )
-                }
-                if (routeUi.summary != null || routeUi.waitingForGps) {
-                    OutlinedButton(
-                        onClick = {
-                            focusManager.clearFocus()
-                            onClearRoute()
-                            voiceController.resetRoute()
-                        },
-                        modifier = Modifier.height(52.dp),
-                    ) { Text("CLEAR") }
-                }
-            }
-
             routeUi.error?.takeIf { routeUi.summary == null }?.let {
                 Spacer(Modifier.height(6.dp))
                 Text(it, color = if (routeUi.waitingForGps) NavAmber else NavRed, fontSize = 11.sp)
             }
-            routeUi.summary?.let { route ->
+            if (queryFocused) routeUi.summary?.let { route ->
                 Spacer(Modifier.height(7.dp))
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -2288,5 +2203,107 @@ private fun formatNavDuration(seconds: Double): String {
     return when {
         minutes < 60 -> "$minutes min"
         else -> "${minutes / 60}h ${minutes % 60}m"
+    }
+}
+
+@Composable
+private fun VoiceOptions(voiceController: NavigationVoiceController, voiceState: NavigationVoiceController.State) {
+    var voiceMenuExpanded by remember { mutableStateOf(false) }
+    var voiceGroup by remember { mutableStateOf<String?>(null) }
+    val selectedVoiceLabel = voiceState.voices
+        .firstOrNull { it.id == voiceState.selectedVoiceId }
+        ?.let { if (it.group == "Defaults & effects") it.label else "${it.group} · ${it.label}" }
+        ?: "System default"
+
+    Column {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                OutlinedButton(
+                    onClick = { voiceController.cycleMode() },
+                    enabled = voiceState.ready,
+                    modifier = Modifier.weight(0.8f),
+                ) {
+                    Text(
+                        when {
+                            !voiceState.ready -> "VOICE…"
+                            else -> voiceState.mode.label
+                        },
+                        maxLines = 1,
+                    )
+                }
+                Box(Modifier.weight(1.2f)) {
+                    OutlinedButton(
+                        onClick = { voiceGroup = null; voiceMenuExpanded = true },
+                        enabled = voiceState.ready && voiceState.voices.isNotEmpty(),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(selectedVoiceLabel, maxLines = 1)
+                    }
+                    DropdownMenu(
+                        expanded = voiceMenuExpanded,
+                        onDismissRequest = { voiceMenuExpanded = false },
+                    ) {
+                        if (voiceGroup == null) {
+                            voiceState.voices.map { it.group }.distinct().forEach { group ->
+                                DropdownMenuItem(text = { Text(group) }, onClick = { voiceGroup = group })
+                            }
+                        } else {
+                            DropdownMenuItem(text = { Text("‹ All languages / regions") }, onClick = { voiceGroup = null })
+                            voiceState.voices.filter { it.group == voiceGroup }.forEach { option ->
+                                DropdownMenuItem(
+                                    text = { Text(option.label) },
+                                    onClick = {
+                                        voiceController.selectVoice(option.id)
+                                        voiceMenuExpanded = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            TextButton(onClick = { voiceController.previewSelectedVoice() },
+                enabled = voiceState.ready && !voiceState.muted) {
+                Text(if (voiceState.muted) "Unmute to test voice" else "TEST SELECTED VOICE")
+            }
+
+            Text("Alerts only: rerouting and arrival. No turn-by-turn speech.",
+                color = NavMuted, fontSize = 12.sp)
+            Spacer(Modifier.height(7.dp))
+
+    }
+}
+
+@Composable
+private fun TrafficOptions(onChanged: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val settings = remember { com.example.gps.traffic.TrafficSettings(context.applicationContext) }
+    var key by remember { mutableStateOf(settings.key()) }
+    var enabled by remember { mutableStateOf(settings.enabled()) }
+    var message by remember { mutableStateOf("") }
+    Column(Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Live traffic", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Text("TomTom congestion overlay: green = flowing, yellow/orange = slower, red = heavy traffic. Coverage varies. Route times and rerouting still use the standard route service.", color = NavMuted, fontSize = 13.sp)
+        OutlinedTextField(value = key, onValueChange = { key = it; message = "" },
+            label = { Text("TomTom Traffic API key") }, singleLine = true,
+            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth())
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Switch(checked = enabled, onCheckedChange = { enabled = it })
+            Text("Show traffic on the map", color = Color.White, modifier = Modifier.padding(start = 8.dp))
+        }
+        Button(onClick = {
+            if (enabled && key.isBlank()) message = "Enter your TomTom Traffic key first."
+            else {
+                settings.save(key, enabled)
+                onChanged()
+                message = if (enabled) "Saved. Connection status appears on the map." else "Traffic disabled."
+            }
+        }) { Text("SAVE TRAFFIC SETTINGS") }
+        TextButton(onClick = {
+            key = ""; enabled = false; settings.save("", false); onChanged(); message = "Key removed."
+        }) { Text("REMOVE KEY") }
+        if (message.isNotBlank()) Text(message, color = NavBlueSoft, fontSize = 13.sp)
+        Text("Your key stays on this phone. Traffic refreshes every two minutes while this screen is active. Provider usage limits apply.", color = NavMuted, fontSize = 12.sp)
     }
 }
