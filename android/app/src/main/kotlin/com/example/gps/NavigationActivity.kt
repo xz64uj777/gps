@@ -120,6 +120,7 @@ class NavigationActivity : ComponentActivity() {
     private var uiState by mutableStateOf(GnssUiState())
     private var sessionActive by mutableStateOf(false)
     private var recordingActive by mutableStateOf(false)
+    private var autoRecordingForRoute = false
     private var routeQuery by mutableStateOf("")
     private var routeUi by mutableStateOf(NavigationRouteUi())
 
@@ -171,6 +172,7 @@ class NavigationActivity : ComponentActivity() {
         if (!sessionActive) navigationStore.clear()
         routeQuery = recovered?.destinationName.orEmpty()
         routeUi = NavigationRouteUi(summary = recovered)
+        autoRecordingForRoute = recovered != null && recordingActive
         if (recovered != null) logRouteEvent("ROUTE_RECOVERED")
 
         MapLibre.getInstance(this)
@@ -271,13 +273,11 @@ class NavigationActivity : ComponentActivity() {
         sessionActive = store.isActive()
         recordingActive = store.isRecording()
         DriveSessionRuntime.addListener(runtimeListener)
-        if (!liveViewStoppedByUser && !pendingStart) {
+        if (!liveViewStoppedByUser && !pendingStart && (routeUi.summary != null || recordingActive)) {
             if (hasFineLocationPermission()) {
-                // An active preference does not prove the service is running.
-                ensureLiveView()
-            } else if (!locationPromptedThisVisit) {
-                locationPromptedThisVisit = true
-                requestDrivePermissions(true)
+                // Resume only an intentional navigation/recording session.
+                // Standalone Live View now starts only when the driver asks for it.
+                resumeDrive()
             }
         }
     }
@@ -350,6 +350,7 @@ class NavigationActivity : ComponentActivity() {
             return
         }
         routeQuery = query
+        ensureRouteRecording()
 
         if (freshLocation(uiState)) {
             pendingRouteQuery = null
@@ -382,6 +383,10 @@ class NavigationActivity : ComponentActivity() {
                         NavigationRouteUi(summary = summary)
                     },
                     onFailure = { error ->
+                        if (autoRecordingForRoute && recordingActive) {
+                            stopTripRecording()
+                            autoRecordingForRoute = false
+                        }
                         routeUi.copy(
                             planning = false,
                             error = error.message ?: "Could not build this route.",
@@ -407,6 +412,11 @@ class NavigationActivity : ComponentActivity() {
             lastRouteCheckpoint = SystemClock.elapsedRealtime()
         }
         routeUi = routeUi.copy(summary = progressed, error = null)
+
+        if (progressed.arrived && autoRecordingForRoute && recordingActive) {
+            stopTripRecording()
+            autoRecordingForRoute = false
+        }
 
         if (!sessionActive || progressed.arrived || routeUi.planning || routeUi.rerouting) {
             offRouteFixStreak = 0
@@ -462,6 +472,10 @@ class NavigationActivity : ComponentActivity() {
     private fun clearRoute() {
         routeGeneration++
         logRouteEvent("ROUTE_STOPPED")
+        if (autoRecordingForRoute && recordingActive) {
+            stopTripRecording()
+            autoRecordingForRoute = false
+        }
         pendingRouteQuery = null
         navigationStore.clear()
         routeQuery = ""
@@ -508,16 +522,46 @@ class NavigationActivity : ComponentActivity() {
         }
 
         sessionActive = true
-        uiState = GnssUiState(message = if (destination.isBlank()) "Starting Live View…" else "Starting navigation…")
+        uiState = GnssUiState(message = if (destination.isBlank()) "Starting Live View…" else "Starting navigation + trip recording…")
         lastProgressFixTimestamp = null
         lastMapFixTimestamp = null
-        val intent = Intent(this, DriveTrackingService::class.java)
-            .setAction(DriveTrackingService.ACTION_OPEN_LIVE_VIEW)
-        ContextCompat.startForegroundService(this, intent)
+        if (destination.isBlank()) {
+            autoRecordingForRoute = false
+            ContextCompat.startForegroundService(
+                this,
+                Intent(this, DriveTrackingService::class.java)
+                    .setAction(DriveTrackingService.ACTION_OPEN_LIVE_VIEW)
+            )
+        } else {
+            recordingActive = true
+            autoRecordingForRoute = true
+            ContextCompat.startForegroundService(
+                this,
+                Intent(this, DriveTrackingService::class.java)
+                    .setAction(DriveTrackingService.ACTION_START)
+                    .putExtra(DriveTrackingService.EXTRA_RESET, true)
+            )
+        }
+    }
+
+    private fun ensureRouteRecording() {
+        if (recordingActive || store.isRecording()) {
+            recordingActive = true
+            return
+        }
+        recordingActive = true
+        autoRecordingForRoute = true
+        ContextCompat.startForegroundService(
+            this,
+            Intent(this, DriveTrackingService::class.java)
+                .setAction(DriveTrackingService.ACTION_START)
+                .putExtra(DriveTrackingService.EXTRA_RESET, true)
+        )
     }
 
     private fun startTripRecording() {
         if (recordingActive) return
+        autoRecordingForRoute = false
         recordingActive = true
         ContextCompat.startForegroundService(
             this,
