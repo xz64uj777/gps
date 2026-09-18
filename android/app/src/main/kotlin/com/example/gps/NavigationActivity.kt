@@ -386,7 +386,7 @@ class NavigationActivity : ComponentActivity() {
                         NavigationRouteUi(summary = summary)
                     },
                     onFailure = { error ->
-                        if (autoRecordingForRoute && recordingActive) {
+                        if (recordingActive) {
                             stopTripRecording()
                             autoRecordingForRoute = false
                         }
@@ -416,7 +416,7 @@ class NavigationActivity : ComponentActivity() {
         }
         routeUi = routeUi.copy(summary = progressed, error = null)
 
-        if (progressed.arrived && autoRecordingForRoute && recordingActive) {
+        if (progressed.arrived && recordingActive) {
             stopTripRecording()
             autoRecordingForRoute = false
         }
@@ -473,9 +473,14 @@ class NavigationActivity : ComponentActivity() {
     }
 
     private fun clearRoute() {
+        val endingRoute =
+            routeUi.summary != null || pendingRouteQuery != null || routeUi.planning || routeUi.waitingForGps
         routeGeneration++
         logRouteEvent("ROUTE_STOPPED")
-        if (autoRecordingForRoute && recordingActive) {
+        if (endingRoute && recordingActive) {
+            // Destination navigation owns its recording lifecycle. Stopping/clearing
+            // navigation must save the trip immediately instead of leaving a red
+            // recorder running in Live View.
             stopTripRecording()
             autoRecordingForRoute = false
         }
