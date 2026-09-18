@@ -200,10 +200,14 @@ class DriveTrackingService : Service() {
             }
         }
         if (tracker != null) {
-            // START while already recording is a no-op; START from Live View promotes
-            // the running sensor session to an intentional trip without a second tracker.
+            // START while already recording is a no-op. Promoting sensing-only
+            // Live View to a route trip must begin a brand-new CSV, otherwise the
+            // new drive can inherit stale rows/header schema from an older trip.
             store.setActive(true)
-            if (recordTelemetry) store.setRecording(true)
+            if (recordTelemetry && !store.isRecording()) {
+                store.beginRecordingSession()
+                store.setRecording(true)
+            }
             return
         }
 
