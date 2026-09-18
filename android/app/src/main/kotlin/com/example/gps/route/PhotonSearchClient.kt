@@ -22,9 +22,19 @@ class PhotonSearchClient {
         val lat: Double,
         val lon: Double,
     ) {
-        fun fullLabel(): String = listOf(label, subtitle)
-            .filter { it.isNotBlank() }
-            .joinToString(", ")
+        fun fullLabel(): String {
+            val cleanLabel = label.trim()
+            val subtitleParts = subtitle.split(',')
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+                .toMutableList()
+            if (subtitleParts.firstOrNull()?.equals(cleanLabel, ignoreCase = true) == true) {
+                subtitleParts.removeAt(0)
+            }
+            return (listOf(cleanLabel) + subtitleParts)
+                .filter { it.isNotBlank() }
+                .joinToString(", ")
+        }
     }
 
     fun search(
