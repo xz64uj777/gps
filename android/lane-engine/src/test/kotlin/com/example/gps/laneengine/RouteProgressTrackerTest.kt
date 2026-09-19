@@ -52,6 +52,22 @@ class RouteProgressTrackerTest {
         assertTrue(result.crossTrackMeters < 3.0)
     }
 
+
+    @Test
+    fun longSegmentReportsFractionalProjection() {
+        val route = listOf(eastPoint(0.0), eastPoint(2_000.0))
+        val result = tracker.match(
+            position = eastPoint(500.0),
+            geometry = route,
+            previousIndex = 0,
+        )
+
+        assertEquals(0, result.segmentIndex)
+        assertTrue(result.segmentFraction in 0.20..0.30)
+        assertTrue(result.crossTrackMeters < 2.0)
+        assertTrue(kotlin.math.abs(result.projectedPoint.lon - eastPoint(500.0).lon) < 0.00002)
+    }
+
     @Test
     fun crossTrackDistanceReflectsLeavingRoute() {
         val route = (0..12).map { eastPoint(it * 20.0) }
