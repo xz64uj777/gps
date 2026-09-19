@@ -2010,6 +2010,7 @@ private fun DestinationCard(
                                     onClick = {
                                         onQueryChange(item.label)
                                         focusManager.clearFocus()
+                                        onQuickRoute(item.label)
                                     },
                                     modifier = Modifier.weight(1f),
                                 ) {
@@ -2062,6 +2063,7 @@ private fun DestinationCard(
                                         onClick = {
                                             onQueryChange(fullLabel)
                                             focusManager.clearFocus()
+                                            onQuickRoute(fullLabel)
                                         },
                                         modifier = Modifier.weight(1f),
                                     ) {
@@ -2106,6 +2108,24 @@ private fun DestinationCard(
             }
 
             Spacer(Modifier.height(8.dp))
+            Button(
+                onClick = {
+                    focusManager.clearFocus()
+                    onPrimaryAction()
+                },
+                enabled = query.isNotBlank() && !routeUi.planning,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+            ) {
+                Text(
+                    when {
+                        routeUi.planning -> "BUILDING ROUTE…"
+                        routeUi.summary != null -> "ROUTE TO THIS"
+                        else -> "START NAVIGATION"
+                    },
+                    fontWeight = FontWeight.ExtraBold,
+                )
+            }
+
             routeUi.error?.takeIf { routeUi.summary == null }?.let {
                 Spacer(Modifier.height(6.dp))
                 Text(it, color = if (routeUi.waitingForGps) NavAmber else NavRed, fontSize = 11.sp)
