@@ -1,7 +1,7 @@
 package com.example.gps.route
 
-import kotlin.test.Test
-import kotlin.test.assertTrue
+import org.junit.Assert.assertTrue
+import org.junit.Test
 
 class OpenRouteClientProgressTest {
     @Test
