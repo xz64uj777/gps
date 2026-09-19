@@ -124,6 +124,9 @@ class OpenRouteClient {
             previousIndex = route.progressIndex,
         )
         val nearestIndex = progress.routeIndex
+        val segmentIndex = progress.segmentIndex.coerceIn(0, route.geometry.lastIndex - 1)
+        val segmentEndIndex = (segmentIndex + 1).coerceAtMost(route.geometry.lastIndex)
+        val projectedPoint = RoutePoint(progress.projectedPoint.lat, progress.projectedPoint.lon)
         val rawOffRoute = progress.crossTrackMeters
         val destinationDistance = distanceMeters(
             current,
@@ -134,8 +137,12 @@ class OpenRouteClient {
         val calculatedRemaining = if (arrived) {
             0.0
         } else {
-            distanceMeters(current, route.geometry[nearestIndex]) +
-                routeDistance(route.geometry, nearestIndex, route.geometry.lastIndex)
+            // Use along-route distance from the projected point rather than
+            // distance back to the nearest geometry vertex. On long straight
+            // OSRM segments the old math could leave ETA and maneuver distance
+            // apparently frozen for miles even while the car was on-route.
+            distanceMeters(projectedPoint, route.geometry[segmentEndIndex]) +
+                routeDistance(route.geometry, segmentEndIndex, route.geometry.lastIndex)
         }
         // Small GPS wobble can make straight-line distance to the accepted route
         // point grow slightly. Do not let that create large backwards-looking ETA
@@ -182,8 +189,12 @@ class OpenRouteClient {
                 current,
                 RoutePoint(next.lat, next.lon),
             )
-            else -> distanceMeters(current, route.geometry[nearestIndex]) +
-                routeDistance(route.geometry, nearestIndex, next.routeIndex)
+            else -> {
+                val remainingOnCurrentSegment =
+                    distanceMeters(projectedPoint, route.geometry[segmentEndIndex])
+                remainingOnCurrentSegment +
+                    routeDistance(route.geometry, segmentEndIndex, next.routeIndex)
+            }
         }
 
         val progressed = route.copy(
