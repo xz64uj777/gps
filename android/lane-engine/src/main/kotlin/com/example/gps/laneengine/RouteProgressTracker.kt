@@ -16,6 +16,9 @@ class RouteProgressTracker {
     data class Match(
         val routeIndex: Int,
         val crossTrackMeters: Double,
+        val segmentIndex: Int,
+        val segmentFraction: Double,
+        val projectedPoint: GeoPoint,
     )
 
     fun match(
@@ -25,8 +28,24 @@ class RouteProgressTracker {
         forwardHorizonMeters: Double = DEFAULT_FORWARD_HORIZON_M,
         backwardPoints: Int = DEFAULT_BACKWARD_POINTS,
     ): Match {
-        if (geometry.isEmpty()) return Match(0, Double.POSITIVE_INFINITY)
-        if (geometry.size == 1) return Match(0, distanceMeters(position, geometry.first()))
+        if (geometry.isEmpty()) {
+            return Match(
+                routeIndex = 0,
+                crossTrackMeters = Double.POSITIVE_INFINITY,
+                segmentIndex = 0,
+                segmentFraction = 0.0,
+                projectedPoint = position,
+            )
+        }
+        if (geometry.size == 1) {
+            return Match(
+                routeIndex = 0,
+                crossTrackMeters = distanceMeters(position, geometry.first()),
+                segmentIndex = 0,
+                segmentFraction = 0.0,
+                projectedPoint = geometry.first(),
+            )
+        }
 
         val previous = previousIndex.coerceIn(0, geometry.lastIndex)
         val startSegment = (previous - backwardPoints).coerceAtLeast(0).coerceAtMost(geometry.lastIndex - 1)
@@ -36,6 +55,9 @@ class RouteProgressTracker {
 
         var bestDistance = Double.POSITIVE_INFINITY
         var bestIndex = previous
+        var bestSegment = startSegment
+        var bestFraction = 0.0
+        var bestProjectedPoint = geometry[startSegment]
 
         for (segmentIndex in startSegment until endPoint) {
             val projection = project(position, geometry[segmentIndex], geometry[segmentIndex + 1])
@@ -43,12 +65,18 @@ class RouteProgressTracker {
                 bestDistance = projection.distanceMeters
                 val projectedIndex = if (projection.t >= 0.5) segmentIndex + 1 else segmentIndex
                 bestIndex = max(previous, projectedIndex)
+                bestSegment = segmentIndex
+                bestFraction = projection.t
+                bestProjectedPoint = projection.projectedPoint
             }
         }
 
         return Match(
             routeIndex = bestIndex.coerceIn(previous, geometry.lastIndex),
             crossTrackMeters = bestDistance,
+            segmentIndex = bestSegment.coerceIn(0, geometry.lastIndex - 1),
+            segmentFraction = bestFraction.coerceIn(0.0, 1.0),
+            projectedPoint = bestProjectedPoint,
         )
     }
 
@@ -66,7 +94,11 @@ class RouteProgressTracker {
         return index
     }
 
-    private data class Projection(val distanceMeters: Double, val t: Double)
+    private data class Projection(
+        val distanceMeters: Double,
+        val t: Double,
+        val projectedPoint: GeoPoint,
+    )
 
     private fun project(point: GeoPoint, a: GeoPoint, b: GeoPoint): Projection {
         val lat0 = point.lat * PI / 180.0
@@ -84,7 +116,11 @@ class RouteProgressTracker {
         val t = if (denom <= 1e-9) 0.0 else ((-ax * dx - ay * dy) / denom).coerceIn(0.0, 1.0)
         val east = ax + t * dx
         val north = ay + t * dy
-        return Projection(hypot(east, north), t)
+        val projected = GeoPoint(
+            lat = a.lat + (b.lat - a.lat) * t,
+            lon = a.lon + (b.lon - a.lon) * t,
+        )
+        return Projection(hypot(east, north), t, projected)
     }
 
     private fun distanceMeters(a: GeoPoint, b: GeoPoint): Double {
