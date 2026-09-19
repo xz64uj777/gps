@@ -1073,15 +1073,22 @@ private fun NavigationScreen(
 
     BoxWithConstraints(Modifier.fillMaxSize().background(NavBg)) {
         val wide = maxWidth >= 600.dp
+        val foldedCompact = maxWidth < 480.dp
         AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize())
         if (!editingDestination) {
         Column(
             Modifier.align(Alignment.TopStart).windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
-                .padding(start = 8.dp, top = 8.dp, end = 64.dp, bottom = 8.dp).widthIn(max = if (wide) 390.dp else 540.dp).fillMaxWidth(),
+                .padding(
+                    start = if (foldedCompact) 5.dp else 8.dp,
+                    top = if (foldedCompact) 5.dp else 8.dp,
+                    end = if (foldedCompact) 52.dp else 64.dp,
+                    bottom = 6.dp,
+                )
+                .widthIn(max = if (wide) 390.dp else 540.dp).fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Surface(color = NavCardStrong, shape = RoundedCornerShape(16.dp)) {
-                Column(Modifier.padding(10.dp)) {
+            Surface(color = NavCardStrong, shape = RoundedCornerShape(if (foldedCompact) 12.dp else 16.dp)) {
+                Column(Modifier.padding(if (foldedCompact) 6.dp else 10.dp)) {
                     Text(
                         when {
                             gpsStale -> "GPS LOST · guidance paused"
@@ -1095,21 +1102,22 @@ private fun NavigationScreen(
                             sessionActive -> "LIVE VIEW · NOT RECORDING"
                             else -> "LaneGPS · READY"
                         }, color = if (gpsStale) NavRed else NavBlueSoft,
-                        fontWeight = FontWeight.Bold, fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold, fontSize = if (foldedCompact) 9.sp else 12.sp,
                     )
                     route?.let {
                         Text(com.example.gps.laneengine.ManeuverInstruction.symbol(it.nextManeuver),
-                            color = Color.White, fontSize = 36.sp, fontWeight = FontWeight.Bold)
+                            color = Color.White, fontSize = if (foldedCompact) 24.sp else 36.sp, fontWeight = FontWeight.Bold)
                         if (!it.arrived && it.distanceMeters <= 500.0) {
                             Text(it.destinationSide?.let { side -> "Destination on the $side" }
                                 ?: "Destination side unavailable", color = NavBlueSoft, fontSize = 13.sp)
                         }
                     }
                     Text(route?.nextManeuver ?: if (sessionActive) "Live road follow" else "Live view · no destination needed",
-                        color = Color.White, fontSize = 21.sp, fontWeight = FontWeight.Bold, maxLines = 2)
+                        color = Color.White, fontSize = if (foldedCompact) 15.sp else 21.sp, fontWeight = FontWeight.Bold,
+                        maxLines = if (foldedCompact) 1 else 2)
                     route?.let {
                         Text("${formatNavDistance(it.nextManeuverDistanceMeters)} · ${it.nextRoad}",
-                            color = Color.White, fontSize = 14.sp, maxLines = 1)
+                            color = Color.White, fontSize = if (foldedCompact) 11.sp else 14.sp, maxLines = 1)
                     }
                     routeUi.error?.let { Text(it, color = NavAmber, fontSize = 12.sp, maxLines = 2) }
                 }
@@ -1127,6 +1135,7 @@ private fun NavigationScreen(
                 turnHints = displayTurnHints,
                 recentConfirmedLane = recentConfirmedLane,
                 recentConfirmedAgeMillis = lastConfirmedAgeMillis,
+                compact = foldedCompact,
             )
         }
         }
@@ -1135,10 +1144,22 @@ private fun NavigationScreen(
                 .widthIn(max = if (wide) 390.dp else 540.dp).fillMaxWidth(),
             color = NavCard, shape = RoundedCornerShape(16.dp),
         ) {
-            Column(Modifier.heightIn(max = maxHeight * 0.52f).verticalScroll(rememberScrollState()).padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                DestinationCard(voiceController, voiceState, query, routeUi, sessionActive,
-                    onQueryChange, onQuickRoute, onClearRoute, onPrimaryAction, { editingDestination = it })
-                Text(trafficStatus, color = NavMuted, fontSize = 11.sp)
+            Column(
+                Modifier
+                    .heightIn(max = maxHeight * if (foldedCompact) 0.30f else 0.52f)
+                    .verticalScroll(rememberScrollState())
+                    .padding(if (foldedCompact) 5.dp else 8.dp),
+                verticalArrangement = Arrangement.spacedBy(if (foldedCompact) 2.dp else 4.dp),
+            ) {
+                DestinationCard(
+                    voiceController, voiceState, query, routeUi, sessionActive,
+                    onQueryChange, onQuickRoute, onClearRoute, onPrimaryAction,
+                    { editingDestination = it },
+                    compact = foldedCompact,
+                )
+                if (!foldedCompact || trafficStatus.startsWith("Traffic on")) {
+                    Text(trafficStatus, color = NavMuted, fontSize = if (foldedCompact) 9.sp else 11.sp, maxLines = 1)
+                }
 
                 if (!followingLocation) {
                     Button(onClick = onRecenter, modifier = Modifier.fillMaxWidth()) {
@@ -1148,7 +1169,7 @@ private fun NavigationScreen(
                 Text(
                     "${if (gpsStale || !sessionActive) "—" else ((state.speedMps ?: 0f) * 2.23694f).roundToInt().toString()} mph" +
                         (route?.let { " · ${formatNavDistance(it.distanceMeters)} · ${formatNavDuration(it.durationSeconds)}" } ?: ""),
-                    color = Color.White, fontWeight = FontWeight.Bold, fontSize = 17.sp,
+                    color = Color.White, fontWeight = FontWeight.Bold, fontSize = if (foldedCompact) 13.sp else 17.sp,
                 )
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     OutlinedButton(onClick = { showOptions = true }, modifier = Modifier.weight(1f)) {
@@ -1159,7 +1180,7 @@ private fun NavigationScreen(
                     }
                 }
                 if (!sessionActive) {
-                    Button(onClick = onStartLiveView, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                    Button(onClick = onStartLiveView, modifier = Modifier.fillMaxWidth().heightIn(min = if (foldedCompact) 38.dp else 48.dp)) {
                         Text("START LIVE VIEW", fontWeight = FontWeight.Bold)
                     }
                 } else {
@@ -1172,13 +1193,13 @@ private fun NavigationScreen(
                     if (recordingActive) {
                         Button(
                             onClick = onStopTrip,
-                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = if (foldedCompact) 38.dp else 48.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = NavRed, contentColor = NavBg),
                         ) {
                             Text("STOP & SAVE TRIP", fontWeight = FontWeight.ExtraBold)
                         }
                     } else {
-                        Button(onClick = onStartTrip, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                        Button(onClick = onStartTrip, modifier = Modifier.fillMaxWidth().heightIn(min = if (foldedCompact) 38.dp else 48.dp)) {
                             Text("START TRIP RECORDING", fontWeight = FontWeight.ExtraBold)
                         }
                     }
@@ -1229,6 +1250,7 @@ private fun CompactLaneOverlay(
     turnHints: List<String>,
     recentConfirmedLane: Int?,
     recentConfirmedAgeMillis: Long?,
+    compact: Boolean = false,
 ) {
     val uncertain = stale || weak
     val laneKnown = active &&
@@ -1250,8 +1272,11 @@ private fun CompactLaneOverlay(
         else -> NavGreen
     }
 
-    Surface(color = NavCard, shape = RoundedCornerShape(16.dp)) {
-        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Surface(color = NavCard, shape = RoundedCornerShape(if (compact) 12.dp else 16.dp)) {
+        Column(
+            Modifier.padding(if (compact) 6.dp else 10.dp),
+            verticalArrangement = Arrangement.spacedBy(if (compact) 3.dp else 6.dp),
+        ) {
             Row(
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -1279,7 +1304,7 @@ private fun CompactLaneOverlay(
                         else -> NavAmber
                     },
                     fontWeight = FontWeight.ExtraBold,
-                    fontSize = 15.sp,
+                    fontSize = if (compact) 12.sp else 15.sp,
                 )
                 Surface(
                     color = qualityColor.copy(alpha = 0.16f),
@@ -1290,7 +1315,10 @@ private fun CompactLaneOverlay(
                         color = qualityColor,
                         fontWeight = FontWeight.ExtraBold,
                         fontSize = 9.sp,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                        modifier = Modifier.padding(
+                            horizontal = if (compact) 6.dp else 8.dp,
+                            vertical = if (compact) 3.dp else 5.dp,
+                        ),
                     )
                 }
             }
@@ -1303,6 +1331,7 @@ private fun CompactLaneOverlay(
                     targetLanes = targetLanes,
                     turnHints = turnHints,
                     dimmed = uncertain,
+                    compact = compact,
                 )
 
                 route?.takeIf { !it.arrived }?.let {
@@ -1312,10 +1341,11 @@ private fun CompactLaneOverlay(
                         targetLanes = targetLanes,
                         exact = exact,
                         uncertain = uncertain,
+                        compact = compact,
                     )
                 }
 
-                Text(
+                if (!compact) Text(
                     when {
                         !state.fixReceived -> "Waiting for a GPS fix. Live View is already running."
                         stale -> "GPS lost. The last trustworthy lane picture is frozen instead of jumping."
@@ -1352,6 +1382,7 @@ private fun NextMoveStrip(
     targetLanes: Set<Int>,
     exact: Boolean,
     uncertain: Boolean,
+    compact: Boolean = false,
 ) {
     val nearest = currentLane?.let { current ->
         targetLanes.minByOrNull { kotlin.math.abs(it - current) }
@@ -1379,8 +1410,8 @@ private fun NextMoveStrip(
         Text(
             text,
             modifier = Modifier.fillMaxWidth().padding(
-                horizontal = 10.dp,
-                vertical = if (alreadyCorrect) 6.dp else 9.dp,
+                horizontal = if (compact) 7.dp else 10.dp,
+                vertical = if (compact) 5.dp else if (alreadyCorrect) 6.dp else 9.dp,
             ),
             color = when {
                 uncertain -> NavAmber
@@ -1388,7 +1419,7 @@ private fun NextMoveStrip(
                 else -> Color.White
             },
             fontWeight = FontWeight.ExtraBold,
-            fontSize = if (alreadyCorrect) 12.sp else 16.sp,
+            fontSize = if (compact) 12.sp else if (alreadyCorrect) 12.sp else 16.sp,
             maxLines = 2,
         )
     }
@@ -1402,8 +1433,14 @@ private fun LaneRoadDiagram(
     targetLanes: Set<Int>,
     turnHints: List<String>,
     dimmed: Boolean,
+    compact: Boolean = false,
 ) {
-    Canvas(Modifier.fillMaxWidth().height(118.dp).padding(vertical = 4.dp)) {
+    Canvas(
+        Modifier
+            .fillMaxWidth()
+            .height(if (compact) 72.dp else 118.dp)
+            .padding(vertical = if (compact) 1.dp else 4.dp)
+    ) {
         val nearLeft = size.width * 0.04f
         val nearRight = size.width * 0.96f
         val farLeft = size.width * 0.32f
@@ -1882,6 +1919,7 @@ private fun DestinationCard(
     onClearRoute: () -> Unit,
     onPrimaryAction: () -> Unit,
     onEditingChanged: (Boolean) -> Unit,
+    compact: Boolean = false,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val focusManager = LocalFocusManager.current
@@ -1927,17 +1965,24 @@ private fun DestinationCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = NavCard),
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(if (compact) 12.dp else 18.dp),
     ) {
-        Column(Modifier.padding(13.dp)) {
+        Column(Modifier.padding(if (compact) 5.dp else 13.dp)) {
             OutlinedTextField(
                 value = query,
                 onValueChange = onQueryChange,
                 modifier = Modifier
                     .fillMaxWidth()
+                    .heightIn(min = if (compact) 42.dp else 56.dp)
                     .onFocusChanged { queryFocused = it.isFocused; onEditingChanged(it.isFocused) },
                 singleLine = true,
-                placeholder = { Text("Address, place or business") },
+                textStyle = LocalTextStyle.current.copy(fontSize = if (compact) 13.sp else 16.sp),
+                placeholder = {
+                    Text(
+                        if (compact) "Search destination" else "Address, place or business",
+                        fontSize = if (compact) 12.sp else 16.sp,
+                    )
+                },
                 trailingIcon = { TextButton(onClick = { focusManager.clearFocus(); onPrimaryAction() },
                     enabled = query.isNotBlank() && !routeUi.planning) { Text(if (routeUi.planning) "…" else "GO") } },
                 enabled = !routeUi.planning,
@@ -1990,7 +2035,12 @@ private fun DestinationCard(
                     shape = RoundedCornerShape(12.dp),
                     tonalElevation = 2.dp,
                 ) {
-                    Column(Modifier.fillMaxWidth().heightIn(max = 180.dp).verticalScroll(rememberScrollState()).padding(vertical = 4.dp)) {
+                    Column(
+                        Modifier.fillMaxWidth()
+                            .heightIn(max = if (compact) 120.dp else 180.dp)
+                            .verticalScroll(rememberScrollState())
+                            .padding(vertical = if (compact) 2.dp else 4.dp)
+                    ) {
                         if (query.isBlank() && localMatches.isNotEmpty()) {
                             Text(
                                 "HOME · WORK · SAVED · RECENT",
@@ -2114,7 +2164,7 @@ private fun DestinationCard(
                     onPrimaryAction()
                 },
                 enabled = query.isNotBlank() && !routeUi.planning,
-                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                modifier = Modifier.fillMaxWidth().heightIn(min = if (compact) 38.dp else 48.dp),
             ) {
                 Text(
                     when {
