@@ -9,6 +9,7 @@ object NavigationVoiceTelemetryRuntime {
     data class Snapshot(
         val ready: Boolean = false,
         val muted: Boolean = false,
+        val mode: String = "",
         val selectedVoiceId: String = "",
         val selectedVoiceLabel: String = "",
         val speakAttempts: Int = 0,
@@ -37,12 +38,14 @@ object NavigationVoiceTelemetryRuntime {
     fun publishState(
         ready: Boolean,
         muted: Boolean,
+        mode: String?,
         selectedVoiceId: String?,
         selectedVoiceLabel: String?,
     ) {
         latest = latest.copy(
             ready = ready,
             muted = muted,
+            mode = mode.orEmpty(),
             selectedVoiceId = selectedVoiceId.orEmpty(),
             selectedVoiceLabel = selectedVoiceLabel.orEmpty(),
             updatedAtMillis = System.currentTimeMillis(),
