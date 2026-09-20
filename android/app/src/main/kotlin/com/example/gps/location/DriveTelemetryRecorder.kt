@@ -15,7 +15,18 @@ class DriveTelemetryRecorder(context: Context) {
     private val appContext = context.applicationContext
     private val logDir = File(appContext.filesDir, "drive-logs")
     private val logFile = File(logDir, "lane-gps-last-drive.csv")
+    private val appVersionName: String
+    private val appVersionCode: Long
     private var lastRecordedLaneChangeSequence = 0L
+
+    init {
+        val info = appContext.packageManager.getPackageInfo(appContext.packageName, 0)
+        appVersionName = info.versionName.orEmpty()
+        appVersionCode = if (android.os.Build.VERSION.SDK_INT >= 28) info.longVersionCode else {
+            @Suppress("DEPRECATION")
+            info.versionCode.toLong()
+        }
+    }
 
     fun startNew() {
         logDir.mkdirs()
@@ -160,6 +171,7 @@ class DriveTelemetryRecorder(context: Context) {
             nav.updatedAtMillis.takeIf { it > 0L }?.toString() ?: "",
             voice.ready.toString(),
             voice.muted.toString(),
+            csv(voice.mode),
             csv(voice.selectedVoiceId),
             csv(voice.selectedVoiceLabel),
             voice.speakAttempts.toString(),
@@ -178,6 +190,8 @@ class DriveTelemetryRecorder(context: Context) {
             newLaneChangeEvent.toString(),
             laneChangeMapEligible.toString(),
             csv(laneChangeRejection),
+            csv(appVersionName),
+            appVersionCode.toString(),
         ).joinToString(",")
     }
 
@@ -200,10 +214,10 @@ class DriveTelemetryRecorder(context: Context) {
                 "nav_event,nav_destination,nav_next_maneuver,nav_next_road,nav_maneuver_distance_m," +
                 "nav_remaining_distance_m,nav_remaining_seconds,nav_off_route_m,nav_route_point_index," +
                 "nav_maneuver_index,nav_arrived,nav_reroute_count,nav_updated_at_ms," +
-                "voice_ready,voice_muted,voice_selected_id,voice_selected_label,voice_speak_attempts," +
+                "voice_ready,voice_muted,voice_mode,voice_selected_id,voice_selected_label,voice_speak_attempts," +
                 "voice_last_utterance,voice_last_result,voice_last_attempt_ms,voice_updated_at_ms," +
                 "motion_event,motion_event_sequence,lane_change_event,lane_change_event_sequence," +
                 "session_left_lateral_events,session_right_lateral_events,session_turn_events,session_rejected_motion_spikes," +
-                "lane_change_new,lane_change_map_eligible,lane_change_rejection"
+                "lane_change_new,lane_change_map_eligible,lane_change_rejection,app_version_name,app_version_code"
     }
 }
