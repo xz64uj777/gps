@@ -33,6 +33,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -40,6 +41,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -1122,21 +1124,30 @@ private fun NavigationScreen(
                     routeUi.error?.let { Text(it, color = NavAmber, fontSize = 12.sp, maxLines = 2) }
                 }
             }
-            CompactLaneOverlay(
-                state = state,
-                laneNumber = displayLaneNumber,
+            val showLaneOverlay = !foldedCompact || shouldShowCompactLaneOverlay(
                 laneCount = displayLaneCount,
-                stale = gpsStale,
-                weak = gpsWeak,
-                settling = layoutSettling,
-                active = sessionActive,
-                route = route,
                 targetLanes = displayTargetLanes,
-                turnHints = displayTurnHints,
-                recentConfirmedLane = recentConfirmedLane,
-                recentConfirmedAgeMillis = lastConfirmedAgeMillis,
-                compact = foldedCompact,
+                maneuver = route?.nextManeuver,
+                maneuverDistanceMeters = route?.nextManeuverDistanceMeters,
+                arrived = route?.arrived == true,
             )
+            if (showLaneOverlay) {
+                CompactLaneOverlay(
+                    state = state,
+                    laneNumber = displayLaneNumber,
+                    laneCount = displayLaneCount,
+                    stale = gpsStale,
+                    weak = gpsWeak,
+                    settling = layoutSettling,
+                    active = sessionActive,
+                    route = route,
+                    targetLanes = displayTargetLanes,
+                    turnHints = displayTurnHints,
+                    recentConfirmedLane = recentConfirmedLane,
+                    recentConfirmedAgeMillis = lastConfirmedAgeMillis,
+                    compact = foldedCompact,
+                )
+            }
         }
         }
         Surface(
@@ -1146,7 +1157,7 @@ private fun NavigationScreen(
         ) {
             Column(
                 Modifier
-                    .heightIn(max = maxHeight * if (foldedCompact) 0.30f else 0.52f)
+                    .heightIn(max = maxHeight * if (foldedCompact) 0.22f else 0.52f)
                     .verticalScroll(rememberScrollState())
                     .padding(if (foldedCompact) 5.dp else 8.dp),
                 verticalArrangement = Arrangement.spacedBy(if (foldedCompact) 2.dp else 4.dp),
@@ -1542,6 +1553,22 @@ private fun LaneRoadDiagram(
             }
         }
     }
+}
+
+internal fun shouldShowCompactLaneOverlay(
+    laneCount: Int?,
+    targetLanes: Set<Int>,
+    maneuver: String?,
+    maneuverDistanceMeters: Double?,
+    arrived: Boolean,
+): Boolean {
+    if (arrived || laneCount == null || laneCount < 2 || maneuverDistanceMeters == null) return false
+    val intent = routeLaneIntent(maneuver)
+    val mappedLaneChange = targetLanes.isNotEmpty() && maneuverDistanceMeters <= 1_600.0
+    val multiLaneTurn =
+        intent in setOf(RouteLaneIntent.LEFT, RouteLaneIntent.RIGHT, RouteLaneIntent.UTURN) &&
+            maneuverDistanceMeters <= 700.0
+    return mappedLaneChange || multiLaneTurn
 }
 
 private enum class RouteLaneIntent { LEFT, RIGHT, THROUGH, UTURN }
@@ -1968,25 +1995,59 @@ private fun DestinationCard(
         shape = RoundedCornerShape(if (compact) 12.dp else 18.dp),
     ) {
         Column(Modifier.padding(if (compact) 5.dp else 13.dp)) {
-            OutlinedTextField(
-                value = query,
-                onValueChange = onQueryChange,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = if (compact) 42.dp else 56.dp)
-                    .onFocusChanged { queryFocused = it.isFocused; onEditingChanged(it.isFocused) },
-                singleLine = true,
-                textStyle = LocalTextStyle.current.copy(fontSize = if (compact) 13.sp else 16.sp),
-                placeholder = {
-                    Text(
-                        if (compact) "Search destination" else "Address, place or business",
-                        fontSize = if (compact) 12.sp else 16.sp,
-                    )
-                },
-                trailingIcon = { TextButton(onClick = { focusManager.clearFocus(); onPrimaryAction() },
-                    enabled = query.isNotBlank() && !routeUi.planning) { Text(if (routeUi.planning) "…" else "GO") } },
-                enabled = !routeUi.planning,
-            )
+            if (compact) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth().height(40.dp),
+                    color = Color(0xFF0D1422),
+                    shape = RoundedCornerShape(10.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, NavLine),
+                ) {
+                    Row(
+                        Modifier.fillMaxSize().padding(start = 10.dp, end = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        BasicTextField(
+                            value = query,
+                            onValueChange = onQueryChange,
+                            modifier = Modifier
+                                .weight(1f)
+                                .onFocusChanged { queryFocused = it.isFocused; onEditingChanged(it.isFocused) },
+                            singleLine = true,
+                            enabled = !routeUi.planning,
+                            textStyle = LocalTextStyle.current.copy(color = Color.White, fontSize = 13.sp),
+                            cursorBrush = SolidColor(NavBlueSoft),
+                            decorationBox = { inner ->
+                                Box(contentAlignment = Alignment.CenterStart) {
+                                    if (query.isBlank()) {
+                                        Text("Search destination", color = NavMuted, fontSize = 12.sp, maxLines = 1)
+                                    }
+                                    inner()
+                                }
+                            },
+                        )
+                        TextButton(
+                            onClick = { focusManager.clearFocus(); onPrimaryAction() },
+                            enabled = query.isNotBlank() && !routeUi.planning,
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                        ) {
+                            Text(if (routeUi.planning) "…" else "GO", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                        }
+                    }
+                }
+            } else {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = onQueryChange,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onFocusChanged { queryFocused = it.isFocused; onEditingChanged(it.isFocused) },
+                    singleLine = true,
+                    placeholder = { Text("Address, place or business") },
+                    trailingIcon = { TextButton(onClick = { focusManager.clearFocus(); onPrimaryAction() },
+                        enabled = query.isNotBlank() && !routeUi.planning) { Text(if (routeUi.planning) "…" else "GO") } },
+                    enabled = !routeUi.planning,
+                )
+            }
 
             if (queryFocused) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
@@ -2157,23 +2218,25 @@ private fun DestinationCard(
                 }
             }
 
-            Spacer(Modifier.height(8.dp))
-            Button(
-                onClick = {
-                    focusManager.clearFocus()
-                    onPrimaryAction()
-                },
-                enabled = query.isNotBlank() && !routeUi.planning,
-                modifier = Modifier.fillMaxWidth().heightIn(min = if (compact) 38.dp else 48.dp),
-            ) {
-                Text(
-                    when {
-                        routeUi.planning -> "BUILDING ROUTE…"
-                        routeUi.summary != null -> "ROUTE TO THIS"
-                        else -> "START NAVIGATION"
+            if (!compact) {
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = {
+                        focusManager.clearFocus()
+                        onPrimaryAction()
                     },
-                    fontWeight = FontWeight.ExtraBold,
-                )
+                    enabled = query.isNotBlank() && !routeUi.planning,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                ) {
+                    Text(
+                        when {
+                            routeUi.planning -> "BUILDING ROUTE…"
+                            routeUi.summary != null -> "ROUTE TO THIS"
+                            else -> "START NAVIGATION"
+                        },
+                        fontWeight = FontWeight.ExtraBold,
+                    )
+                }
             }
 
             routeUi.error?.takeIf { routeUi.summary == null }?.let {
