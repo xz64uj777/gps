@@ -41,6 +41,7 @@ class OpenRouteClient {
         val lat: Double,
         val lon: Double,
         val routeIndex: Int,
+        val lanes: List<RouteLane> = emptyList(),
     )
 
     data class RouteSummary(
@@ -64,6 +65,7 @@ class OpenRouteClient {
         val arrived: Boolean = false,
         val source: String = "OSM · OSRM",
         val destinationSide: String? = null,
+        val nextLanes: List<RouteLane> = emptyList(),
     )
 
     fun plan(
@@ -206,6 +208,7 @@ class OpenRouteClient {
                 else -> "Continue to destination"
             },
             nextRoad = next?.road.orEmpty(),
+            nextLanes = next?.lanes.orEmpty(),
             nextManeuverDistanceMeters = maneuverDistance,
             progressIndex = nearestIndex,
             offRouteDistanceMeters = offRoute,
@@ -268,6 +271,24 @@ class OpenRouteClient {
             val steps = legs.getJSONObject(legIndex).getJSONArray("steps")
             for (stepIndex in 0 until steps.length()) {
                 val step = steps.getJSONObject(stepIndex)
+                // Some highway lane choices have no separate turn instruction. Keep
+                // lane-bearing intersections inside a step as their own route events.
+                val intersections = step.optJSONArray("intersections")
+                for (i in 1 until (intersections?.length() ?: 0)) {
+                    val intersection = intersections?.optJSONObject(i) ?: continue
+                    val lanes = RouteLaneGuidance.decode(intersection.optJSONArray("lanes"))
+                    if (lanes.none { it.valid }) continue
+                    val at = intersection.optJSONArray("location") ?: continue
+                    val point = RoutePoint(at.optDouble(1), at.optDouble(0))
+                    if (point.lat !in -90.0..90.0 || point.lon !in -180.0..180.0) continue
+                    maneuvers += RouteManeuver(
+                        label = "Continue on route",
+                        road = listOf(step.optString("ref", ""), step.optString("name", ""))
+                            .filter { it.isNotBlank() }.distinct().joinToString(" · "),
+                        lat = point.lat, lon = point.lon,
+                        routeIndex = nearestRouteIndex(point, geometry), lanes = lanes,
+                    )
+                }
                 val maneuver = step.optJSONObject("maneuver") ?: continue
                 val type = maneuver.optString("type", "")
                 if (type.isBlank() || type == "depart") continue
@@ -292,6 +313,7 @@ class OpenRouteClient {
                     lat = point.lat,
                     lon = point.lon,
                     routeIndex = nearestRouteIndex(point, geometry),
+                    lanes = RouteLaneGuidance.forStep(step),
                 )
             }
         }

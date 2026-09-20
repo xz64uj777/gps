@@ -39,6 +39,7 @@ internal object RouteCheckpoint {
         put("durationSeconds", r.durationSeconds)
         put("nextManeuver", r.nextManeuver)
         put("nextRoad", r.nextRoad)
+        put("nextLanes", RouteLaneGuidance.encode(r.nextLanes))
         put("nextManeuverDistanceMeters", r.nextManeuverDistanceMeters)
         put("totalRouteMeters", r.totalRouteMeters)
         put("totalRouteSeconds", r.totalRouteSeconds)
@@ -53,7 +54,8 @@ internal object RouteCheckpoint {
         put("maneuvers", JSONArray().apply {
             r.maneuvers.forEach {
                 put(JSONObject().put("label", it.label).put("road", it.road)
-                    .put("lat", it.lat).put("lon", it.lon).put("routeIndex", it.routeIndex))
+                    .put("lat", it.lat).put("lon", it.lon).put("routeIndex", it.routeIndex)
+                    .put("lanes", RouteLaneGuidance.encode(it.lanes)))
             }
         })
     }.toString()
@@ -71,7 +73,8 @@ internal object RouteCheckpoint {
         val maneuvers = j.getJSONArray("maneuvers").let { a ->
             List(a.length()) { i -> a.getJSONObject(i).let {
                 OpenRouteClient.RouteManeuver(it.getString("label"), it.getString("road"),
-                    it.getDouble("lat"), it.getDouble("lon"), it.getInt("routeIndex"))
+                    it.getDouble("lat"), it.getDouble("lon"), it.getInt("routeIndex"),
+                    RouteLaneGuidance.decode(it.optJSONArray("lanes")))
             } }
         }
         require(j.getInt("progressIndex") in geometry.indices)
@@ -82,6 +85,7 @@ internal object RouteCheckpoint {
             destinationLon = j.getDouble("destinationLon"), distanceMeters = j.getDouble("distanceMeters"),
             durationSeconds = j.getDouble("durationSeconds"), nextManeuver = j.getString("nextManeuver"),
             nextRoad = j.getString("nextRoad"), nextManeuverDistanceMeters = j.getDouble("nextManeuverDistanceMeters"),
+            nextLanes = RouteLaneGuidance.decode(j.optJSONArray("nextLanes")),
             geometry = geometry, maneuvers = maneuvers, totalRouteMeters = j.getDouble("totalRouteMeters"),
             totalRouteSeconds = j.getDouble("totalRouteSeconds"), progressIndex = j.getInt("progressIndex"),
             routeStartedAtMillis = j.getLong("routeStartedAtMillis"), offRouteDistanceMeters = j.getDouble("offRouteDistanceMeters"),

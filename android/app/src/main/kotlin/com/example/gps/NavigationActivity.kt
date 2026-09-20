@@ -22,6 +22,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.example.gps.route.RouteLaneGuidance
 import com.example.gps.route.ActiveNavigationStore
 import com.example.gps.route.NavigationTelemetryRuntime
 import com.example.gps.location.DriveTelemetryRecorder
@@ -983,67 +984,18 @@ private fun NavigationScreen(
     val liveLaneNumber = if (gpsStale || layoutSettling) null
         else state.likelyLaneNumberFromLeft
     val route = routeUi.summary
-    val liveTargetLanes = remember(state.laneTurnHints, route?.nextManeuver, laneCount) {
-        recommendedLaneNumbers(
-            turnHints = state.laneTurnHints,
-            maneuver = route?.nextManeuver,
-            laneCount = laneCount,
-        )
-    }
-
-    // OSM turn:lanes can appear only on the final tagged approach segment. Hold a
-    // valid recommendation through short gaps on the same maneuver/road layout so
-    // the target lane does not flash on for one or two fixes and disappear again.
-    var rememberedTargetManeuver by remember { mutableStateOf<String?>(null) }
-    var rememberedTargetLaneCount by remember { mutableStateOf<Int?>(null) }
-    var rememberedTargetLanes by remember { mutableStateOf<Set<Int>>(emptySet()) }
-    LaunchedEffect(route?.routeStartedAtMillis, route?.nextManeuver, laneCount, liveTargetLanes) {
-        val maneuverKey = route?.let { "${it.routeStartedAtMillis}|${it.nextManeuver}" }
-        if (maneuverKey != rememberedTargetManeuver) {
-            rememberedTargetManeuver = maneuverKey
-            rememberedTargetLaneCount = null
-            rememberedTargetLanes = emptySet()
-        }
-        if (liveTargetLanes.isNotEmpty() && laneCount != null) {
-            rememberedTargetLaneCount = laneCount
-            rememberedTargetLanes = liveTargetLanes
-        } else if (laneCount != null && rememberedTargetLaneCount != null &&
-            laneCount != rememberedTargetLaneCount) {
-            rememberedTargetLaneCount = null
-            rememberedTargetLanes = emptySet()
-        }
-    }
-    val stableTargetLanes = when {
-        liveTargetLanes.isNotEmpty() -> liveTargetLanes
-        laneCount != null && laneCount == rememberedTargetLaneCount -> rememberedTargetLanes
-        else -> emptySet()
-    }
-
-    // Preserve the last trustworthy lane picture through weak/lost GPS instead of
-    // letting one noisy fix jump the driver across lanes.
-    var frozenLaneCount by remember { mutableStateOf<Int?>(null) }
-    var frozenLaneNumber by remember { mutableStateOf<Int?>(null) }
-    var frozenTurnHints by remember { mutableStateOf<List<String>>(emptyList()) }
-    var frozenTargetLanes by remember { mutableStateOf<Set<Int>>(emptySet()) }
-    LaunchedEffect(
-        gpsWeak, gpsStale, layoutSettling, laneCount, liveLaneNumber,
-        state.laneTurnHints, stableTargetLanes,
-    ) {
-        val stableLaneCount = laneCount
-        if (!gpsWeak && !gpsStale && !layoutSettling && stableLaneCount != null) {
-            frozenLaneCount = stableLaneCount
-            if (liveLaneNumber != null && liveLaneNumber in 1..stableLaneCount) {
-                frozenLaneNumber = liveLaneNumber
-            }
-            if (state.laneTurnHints.size == stableLaneCount) frozenTurnHints = state.laneTurnHints
-            frozenTargetLanes = stableTargetLanes
-        }
-    }
-    val laneUncertain = gpsWeak || gpsStale
-    val displayLaneCount = if (laneUncertain) frozenLaneCount ?: laneCount else laneCount
-    val displayLaneNumber = if (laneUncertain) frozenLaneNumber else liveLaneNumber
-    val displayTurnHints = if (laneUncertain && frozenTurnHints.isNotEmpty()) frozenTurnHints else state.laneTurnHints
-    val displayTargetLanes = if (laneUncertain) frozenTargetLanes else stableTargetLanes
+    val approachingManeuver = route != null && !routeUi.rerouting &&
+        RouteLaneGuidance.visible(route.nextManeuverDistanceMeters, state.speedMps, route.arrived)
+    val approachLanes = if (approachingManeuver) route?.nextLanes.orEmpty() else emptyList()
+    val hasRouteLanes = approachLanes.isNotEmpty()
+    val displayLaneCount = if (hasRouteLanes) approachLanes.size else laneCount
+    val displayTargetLanes = approachLanes.mapIndexedNotNull { i, lane -> (i + 1).takeIf { lane.valid } }.toSet()
+    val displayTurnHints = if (hasRouteLanes) RouteLaneGuidance.hints(approachLanes) else state.laneTurnHints
+    val displayLaneNumber = if (hasRouteLanes) RouteLaneGuidance.currentLane(
+        approachLanes, laneCount, state.laneTurnHints, liveLaneNumber,
+        state.laneExactClaim && !gpsWeak && !gpsStale && !layoutSettling,
+        route!!.nextManeuverDistanceMeters,
+    ) else liveLaneNumber.takeIf { state.laneExactClaim && !gpsWeak && !gpsStale && !layoutSettling }
 
     // Keep the most recent exact confirmation visible briefly as historical
     // evidence. It is never treated as a current exact claim after the gate drops.
@@ -1124,28 +1076,23 @@ private fun NavigationScreen(
                     routeUi.error?.let { Text(it, color = NavAmber, fontSize = 12.sp, maxLines = 2) }
                 }
             }
-            val showLaneDiagram = !foldedCompact || shouldShowCompactLaneOverlay(
-                laneCount = displayLaneCount,
-                targetLanes = displayTargetLanes,
-                maneuver = route?.nextManeuver,
-                maneuverDistanceMeters = route?.nextManeuverDistanceMeters,
-                arrived = route?.arrived == true,
-            )
+            val showLaneDiagram = approachingManeuver && displayLaneCount != null
             CompactLaneOverlay(
                 state = state,
                 laneNumber = displayLaneNumber,
                 laneCount = displayLaneCount,
                 stale = gpsStale,
-                weak = gpsWeak,
-                settling = layoutSettling,
+                weak = gpsWeak && !hasRouteLanes,
+                settling = layoutSettling && !hasRouteLanes,
                 active = sessionActive,
                 route = route,
                 targetLanes = displayTargetLanes,
                 turnHints = displayTurnHints,
-                recentConfirmedLane = recentConfirmedLane,
+                recentConfirmedLane = if (hasRouteLanes) null else recentConfirmedLane,
                 recentConfirmedAgeMillis = lastConfirmedAgeMillis,
                 compact = foldedCompact,
                 showDiagram = showLaneDiagram,
+                routeApproach = hasRouteLanes,
             )
         }
         }
@@ -1299,6 +1246,7 @@ private fun CompactLaneOverlay(
     recentConfirmedAgeMillis: Long?,
     compact: Boolean = false,
     showDiagram: Boolean = true,
+    routeApproach: Boolean = false,
 ) {
     val uncertain = stale || weak
     val laneKnown = active &&
@@ -1332,6 +1280,7 @@ private fun CompactLaneOverlay(
             ) {
                 Text(
                     when {
+                        routeApproach && targetTitle != null -> targetTitle
                         !active -> "LANE GUIDANCE · waiting for live view"
                         uncertain -> "LANE UNCERTAIN · holding last good view"
                         settling -> "UPDATING ROAD LANES"
@@ -1371,6 +1320,11 @@ private fun CompactLaneOverlay(
                 }
             }
 
+            if (routeApproach) {
+                Text("APPROACH LANES · blue = your route" +
+                    if (exact) " · green = your car" else " · current lane unconfirmed",
+                    color = NavMuted, fontSize = 11.sp)
+            }
             if (active) {
                 if (showDiagram && laneCount != null && !settling) LaneRoadDiagram(
                     laneCount = laneCount,
@@ -1438,7 +1392,7 @@ private fun NextMoveStrip(
     val delta = if (currentLane != null && nearest != null) kotlin.math.abs(nearest - currentLane) else 0
     val alreadyCorrect = exact && currentLane != null && currentLane in targetLanes
     val text = when {
-        uncertain -> "LANE UNCERTAIN · hold current position"
+        uncertain -> "GPS uncertain · ${route.nextManeuver}"
         alreadyCorrect -> "STAY · current lane"
         exact && currentLane != null && nearest != null && nearest < currentLane ->
             "← LEFT ${delta.coerceAtLeast(1)} · in ${formatNavDistance(route.nextManeuverDistanceMeters)}"
@@ -1550,7 +1504,7 @@ private fun LaneRoadDiagram(
                 val through = tokens.any { it == "through" }
                 val left = tokens.any { "left" in it || it == "reverse" }
                 val right = tokens.any { "right" in it }
-                if (through || (!left && !right)) {
+                if (through) {
                     drawLine(c, Offset(x, shaftBottom), Offset(x, shaftTop), stroke)
                     drawLine(c, Offset(x, shaftTop), Offset(x - 4.dp.toPx(), shaftTop + 5.dp.toPx()), stroke)
                     drawLine(c, Offset(x, shaftTop), Offset(x + 4.dp.toPx(), shaftTop + 5.dp.toPx()), stroke)
