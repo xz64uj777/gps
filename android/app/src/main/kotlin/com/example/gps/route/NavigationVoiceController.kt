@@ -274,6 +274,7 @@ class NavigationVoiceController(
         NavigationVoiceTelemetryRuntime.publishState(
             ready = current.ready,
             muted = current.muted,
+            mode = current.mode.name,
             selectedVoiceId = current.selectedVoiceId,
             selectedVoiceLabel = label,
         )
