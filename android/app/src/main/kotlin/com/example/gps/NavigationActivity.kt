@@ -1075,7 +1075,7 @@ private fun NavigationScreen(
 
     BoxWithConstraints(Modifier.fillMaxSize().background(NavBg)) {
         val wide = maxWidth >= 600.dp
-        val foldedCompact = maxWidth < 480.dp
+        val foldedCompact = !wide
         AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize())
         if (!editingDestination) {
         Column(
@@ -1124,40 +1124,41 @@ private fun NavigationScreen(
                     routeUi.error?.let { Text(it, color = NavAmber, fontSize = 12.sp, maxLines = 2) }
                 }
             }
-            val showLaneOverlay = !foldedCompact || shouldShowCompactLaneOverlay(
+            val showLaneDiagram = !foldedCompact || shouldShowCompactLaneOverlay(
                 laneCount = displayLaneCount,
                 targetLanes = displayTargetLanes,
                 maneuver = route?.nextManeuver,
                 maneuverDistanceMeters = route?.nextManeuverDistanceMeters,
                 arrived = route?.arrived == true,
             )
-            if (showLaneOverlay) {
-                CompactLaneOverlay(
-                    state = state,
-                    laneNumber = displayLaneNumber,
-                    laneCount = displayLaneCount,
-                    stale = gpsStale,
-                    weak = gpsWeak,
-                    settling = layoutSettling,
-                    active = sessionActive,
-                    route = route,
-                    targetLanes = displayTargetLanes,
-                    turnHints = displayTurnHints,
-                    recentConfirmedLane = recentConfirmedLane,
-                    recentConfirmedAgeMillis = lastConfirmedAgeMillis,
-                    compact = foldedCompact,
-                )
-            }
+            CompactLaneOverlay(
+                state = state,
+                laneNumber = displayLaneNumber,
+                laneCount = displayLaneCount,
+                stale = gpsStale,
+                weak = gpsWeak,
+                settling = layoutSettling,
+                active = sessionActive,
+                route = route,
+                targetLanes = displayTargetLanes,
+                turnHints = displayTurnHints,
+                recentConfirmedLane = recentConfirmedLane,
+                recentConfirmedAgeMillis = lastConfirmedAgeMillis,
+                compact = foldedCompact,
+                showDiagram = showLaneDiagram,
+            )
         }
         }
         Surface(
-            modifier = Modifier.align(Alignment.BottomEnd).navigationBarsPadding().imePadding().padding(8.dp)
+            modifier = Modifier.align(Alignment.BottomEnd)
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal))
+                .imePadding().padding(8.dp)
                 .widthIn(max = if (wide) 390.dp else 540.dp).fillMaxWidth(),
             color = NavCard, shape = RoundedCornerShape(16.dp),
         ) {
             Column(
                 Modifier
-                    .heightIn(max = maxHeight * if (foldedCompact) 0.22f else 0.52f)
+                    .heightIn(max = maxHeight * if (editingDestination) 0.75f else 0.48f)
                     .verticalScroll(rememberScrollState())
                     .padding(if (foldedCompact) 5.dp else 8.dp),
                 verticalArrangement = Arrangement.spacedBy(if (foldedCompact) 2.dp else 4.dp),
@@ -1168,55 +1169,90 @@ private fun NavigationScreen(
                     { editingDestination = it },
                     compact = foldedCompact,
                 )
-                if (!foldedCompact || trafficStatus.startsWith("Traffic on")) {
-                    Text(trafficStatus, color = NavMuted, fontSize = if (foldedCompact) 9.sp else 11.sp, maxLines = 1)
-                }
-
-                if (!followingLocation) {
-                    Button(onClick = onRecenter, modifier = Modifier.fillMaxWidth()) {
-                        Text("RECENTER · FOLLOW ME", fontWeight = FontWeight.Bold)
+                if (foldedCompact && !editingDestination) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "${if (gpsStale || !sessionActive) "—" else ((state.speedMps ?: 0f) * 2.23694f).roundToInt().toString()} mph" +
+                                (route?.let { " · ${formatNavDistance(it.distanceMeters)} · ${formatNavDuration(it.durationSeconds)}" } ?: ""),
+                            modifier = Modifier.weight(1f), color = Color.White, fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        if (!followingLocation) {
+                            TextButton(onClick = onRecenter) { Text("Recenter", fontSize = 12.sp) }
+                        }
+                        if (route != null || routeUi.planning || routeUi.waitingForGps) {
+                            TextButton(onClick = onStopNavigation) { Text("End route", fontSize = 12.sp) }
+                        }
                     }
-                }
-                Text(
-                    "${if (gpsStale || !sessionActive) "—" else ((state.speedMps ?: 0f) * 2.23694f).roundToInt().toString()} mph" +
-                        (route?.let { " · ${formatNavDistance(it.distanceMeters)} · ${formatNavDuration(it.durationSeconds)}" } ?: ""),
-                    color = Color.White, fontWeight = FontWeight.Bold, fontSize = if (foldedCompact) 13.sp else 17.sp,
-                )
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    OutlinedButton(onClick = { showOptions = true }, modifier = Modifier.weight(1f)) {
-                        Text("Options", maxLines = 1)
-                    }
-                    OutlinedButton(onClick = { voiceController.cycleMode() }) {
-                        Text(voiceState.mode.label)
-                    }
-                }
-                if (!sessionActive) {
-                    Button(onClick = onStartLiveView, modifier = Modifier.fillMaxWidth().heightIn(min = if (foldedCompact) 38.dp else 48.dp)) {
-                        Text("START LIVE VIEW", fontWeight = FontWeight.Bold)
-                    }
-                } else {
-                    Text(
-                        if (recordingActive) "TRIP RECORDING ON" else "LIVE VIEW ON · TRIP RECORDING OFF",
-                        color = if (recordingActive) NavRed else NavGreen,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                    )
-                    if (recordingActive) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        OutlinedButton(onClick = { showOptions = true }, modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                            contentPadding = PaddingValues(horizontal = 4.dp)) { Text("Options", fontSize = 12.sp) }
+                        OutlinedButton(onClick = { voiceController.cycleMode() }, modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                            contentPadding = PaddingValues(horizontal = 4.dp)) { Text(voiceState.mode.label, fontSize = 12.sp) }
                         Button(
-                            onClick = onStopTrip,
-                            modifier = Modifier.fillMaxWidth().heightIn(min = if (foldedCompact) 38.dp else 48.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = NavRed, contentColor = NavBg),
+                            onClick = if (!sessionActive) onStartLiveView else if (recordingActive) onStopTrip else onStartTrip,
+                            modifier = Modifier.weight(1.2f).heightIn(min = 48.dp),
+                            contentPadding = PaddingValues(horizontal = 4.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = if (recordingActive) NavRed else NavBlue),
                         ) {
-                            Text("STOP & SAVE TRIP", fontWeight = FontWeight.ExtraBold)
+                            Text(if (!sessionActive) "Live view" else if (recordingActive) "Stop & save" else "Record trip",
+                                fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    if (trafficStatus.startsWith("Traffic on")) {
+                        Text(trafficStatus, color = NavMuted, fontSize = 11.sp, maxLines = 1)
+                    }
+                } else if (!foldedCompact) {
+                    if (!foldedCompact || trafficStatus.startsWith("Traffic on")) {
+                        Text(trafficStatus, color = NavMuted, fontSize = if (foldedCompact) 9.sp else 11.sp, maxLines = 1)
+                    }
+
+                    if (!followingLocation) {
+                        Button(onClick = onRecenter, modifier = Modifier.fillMaxWidth()) {
+                            Text("RECENTER · FOLLOW ME", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    Text(
+                        "${if (gpsStale || !sessionActive) "—" else ((state.speedMps ?: 0f) * 2.23694f).roundToInt().toString()} mph" +
+                            (route?.let { " · ${formatNavDistance(it.distanceMeters)} · ${formatNavDuration(it.durationSeconds)}" } ?: ""),
+                        color = Color.White, fontWeight = FontWeight.Bold, fontSize = if (foldedCompact) 13.sp else 17.sp,
+                    )
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        OutlinedButton(onClick = { showOptions = true }, modifier = Modifier.weight(1f)) {
+                            Text("Options", maxLines = 1)
+                        }
+                        OutlinedButton(onClick = { voiceController.cycleMode() }) {
+                            Text(voiceState.mode.label)
+                        }
+                    }
+                    if (!sessionActive) {
+                        Button(onClick = onStartLiveView, modifier = Modifier.fillMaxWidth().heightIn(min = if (foldedCompact) 38.dp else 48.dp)) {
+                            Text("START LIVE VIEW", fontWeight = FontWeight.Bold)
                         }
                     } else {
-                        Button(onClick = onStartTrip, modifier = Modifier.fillMaxWidth().heightIn(min = if (foldedCompact) 38.dp else 48.dp)) {
-                            Text("START TRIP RECORDING", fontWeight = FontWeight.ExtraBold)
+                        Text(
+                            if (recordingActive) "TRIP RECORDING ON" else "LIVE VIEW ON · TRIP RECORDING OFF",
+                            color = if (recordingActive) NavRed else NavGreen,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                        )
+                        if (recordingActive) {
+                            Button(
+                                onClick = onStopTrip,
+                                modifier = Modifier.fillMaxWidth().heightIn(min = if (foldedCompact) 38.dp else 48.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = NavRed, contentColor = NavBg),
+                            ) {
+                                Text("STOP & SAVE TRIP", fontWeight = FontWeight.ExtraBold)
+                            }
+                        } else {
+                            Button(onClick = onStartTrip, modifier = Modifier.fillMaxWidth().heightIn(min = if (foldedCompact) 38.dp else 48.dp)) {
+                                Text("START TRIP RECORDING", fontWeight = FontWeight.ExtraBold)
+                            }
                         }
-                    }
-                    if (route != null || routeUi.planning || routeUi.waitingForGps) {
-                        OutlinedButton(onClick = onStopNavigation, modifier = Modifier.fillMaxWidth()) {
-                            Text("STOP NAVIGATION", fontWeight = FontWeight.Bold)
+                        if (route != null || routeUi.planning || routeUi.waitingForGps) {
+                            OutlinedButton(onClick = onStopNavigation, modifier = Modifier.fillMaxWidth()) {
+                                Text("STOP NAVIGATION", fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
                 }
@@ -1262,6 +1298,7 @@ private fun CompactLaneOverlay(
     recentConfirmedLane: Int?,
     recentConfirmedAgeMillis: Long?,
     compact: Boolean = false,
+    showDiagram: Boolean = true,
 ) {
     val uncertain = stale || weak
     val laneKnown = active &&
@@ -1298,8 +1335,8 @@ private fun CompactLaneOverlay(
                         !active -> "LANE GUIDANCE · waiting for live view"
                         uncertain -> "LANE UNCERTAIN · holding last good view"
                         settling -> "UPDATING ROAD LANES"
-                        targetTitle != null -> targetTitle
                         exact -> "LANE $laneNumber OF $laneCount · CONFIRMED"
+                        targetTitle != null -> targetTitle
                         recentConfirmedLane != null && laneCount != null ->
                             "LAST CONFIRMED LANE $recentConfirmedLane OF $laneCount · ${(recentConfirmedAgeMillis ?: 0L) / 1000}s AGO"
                         likely -> "LIKELY LANE $laneNumber OF $laneCount · $confidence%"
@@ -1310,8 +1347,8 @@ private fun CompactLaneOverlay(
                     modifier = Modifier.weight(1f),
                     color = when {
                         uncertain -> NavAmber
-                        targetTitle != null -> NavBlueSoft
                         exact -> NavGreen
+                        targetTitle != null -> NavBlueSoft
                         else -> NavAmber
                     },
                     fontWeight = FontWeight.ExtraBold,
@@ -1335,7 +1372,7 @@ private fun CompactLaneOverlay(
             }
 
             if (active) {
-                LaneRoadDiagram(
+                if (showDiagram && laneCount != null && !settling) LaneRoadDiagram(
                     laneCount = laneCount,
                     currentLane = if (laneKnown) laneNumber else null,
                     exact = exact,
@@ -1345,7 +1382,7 @@ private fun CompactLaneOverlay(
                     compact = compact,
                 )
 
-                route?.takeIf { !it.arrived }?.let {
+                route?.takeIf { !it.arrived && showDiagram }?.let {
                     NextMoveStrip(
                         route = it,
                         currentLane = laneNumber,
@@ -1997,13 +2034,13 @@ private fun DestinationCard(
         Column(Modifier.padding(if (compact) 5.dp else 13.dp)) {
             if (compact) {
                 Surface(
-                    modifier = Modifier.fillMaxWidth().height(40.dp),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                     color = Color(0xFF0D1422),
                     shape = RoundedCornerShape(10.dp),
                     border = androidx.compose.foundation.BorderStroke(1.dp, NavLine),
                 ) {
                     Row(
-                        Modifier.fillMaxSize().padding(start = 10.dp, end = 2.dp),
+                        Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 10.dp, end = 2.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         BasicTextField(
@@ -2215,27 +2252,6 @@ private fun DestinationCard(
                             )
                         }
                     }
-                }
-            }
-
-            if (!compact) {
-                Spacer(Modifier.height(8.dp))
-                Button(
-                    onClick = {
-                        focusManager.clearFocus()
-                        onPrimaryAction()
-                    },
-                    enabled = query.isNotBlank() && !routeUi.planning,
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                ) {
-                    Text(
-                        when {
-                            routeUi.planning -> "BUILDING ROUTE…"
-                            routeUi.summary != null -> "ROUTE TO THIS"
-                            else -> "START NAVIGATION"
-                        },
-                        fontWeight = FontWeight.ExtraBold,
-                    )
                 }
             }
 
