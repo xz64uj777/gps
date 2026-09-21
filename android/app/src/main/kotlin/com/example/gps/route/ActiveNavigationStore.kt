@@ -40,6 +40,7 @@ internal object RouteCheckpoint {
         put("nextManeuver", r.nextManeuver)
         put("nextRoad", r.nextRoad)
         put("nextLanes", RouteLaneGuidance.encode(r.nextLanes))
+        put("nextManeuverIndex", r.nextManeuverIndex)
         put("nextManeuverDistanceMeters", r.nextManeuverDistanceMeters)
         put("totalRouteMeters", r.totalRouteMeters)
         put("totalRouteSeconds", r.totalRouteSeconds)
@@ -86,6 +87,7 @@ internal object RouteCheckpoint {
             durationSeconds = j.getDouble("durationSeconds"), nextManeuver = j.getString("nextManeuver"),
             nextRoad = j.getString("nextRoad"), nextManeuverDistanceMeters = j.getDouble("nextManeuverDistanceMeters"),
             nextLanes = RouteLaneGuidance.decode(j.optJSONArray("nextLanes")),
+            nextManeuverIndex = j.optInt("nextManeuverIndex", -1),
             geometry = geometry, maneuvers = maneuvers, totalRouteMeters = j.getDouble("totalRouteMeters"),
             totalRouteSeconds = j.getDouble("totalRouteSeconds"), progressIndex = j.getInt("progressIndex"),
             routeStartedAtMillis = j.getLong("routeStartedAtMillis"), offRouteDistanceMeters = j.getDouble("offRouteDistanceMeters"),

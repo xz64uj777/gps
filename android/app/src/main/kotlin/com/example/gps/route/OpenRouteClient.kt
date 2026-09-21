@@ -66,6 +66,7 @@ class OpenRouteClient {
         val source: String = "OSM · OSRM",
         val destinationSide: String? = null,
         val nextLanes: List<RouteLane> = emptyList(),
+        val nextManeuverIndex: Int = -1,
     )
 
     fun plan(
@@ -209,6 +210,7 @@ class OpenRouteClient {
             },
             nextRoad = next?.road.orEmpty(),
             nextLanes = next?.lanes.orEmpty(),
+            nextManeuverIndex = nextIndex,
             nextManeuverDistanceMeters = maneuverDistance,
             progressIndex = nearestIndex,
             offRouteDistanceMeters = offRoute,

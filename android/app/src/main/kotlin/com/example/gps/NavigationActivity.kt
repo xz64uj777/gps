@@ -22,6 +22,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.example.gps.route.LaneApproachVisibility
 import com.example.gps.route.RouteLaneGuidance
 import com.example.gps.route.ActiveNavigationStore
 import com.example.gps.route.NavigationTelemetryRuntime
@@ -984,9 +985,16 @@ private fun NavigationScreen(
     val liveLaneNumber = if (gpsStale || layoutSettling) null
         else state.likelyLaneNumberFromLeft
     val route = routeUi.summary
-    val approachingManeuver = route != null && !routeUi.rerouting &&
-        RouteLaneGuidance.visible(route.nextManeuverDistanceMeters, state.speedMps, route.arrived)
-    val approachLanes = if (approachingManeuver) route?.nextLanes.orEmpty() else emptyList()
+    val approachVisibility = remember { LaneApproachVisibility() }
+    val maneuverKey = route?.takeIf { !it.arrived && !routeUi.rerouting && sessionActive }?.let {
+        "${it.routeStartedAtMillis}|${it.nextManeuverIndex}|${it.nextManeuver}|${it.nextRoad}"
+    }
+    var approachingManeuver by remember(maneuverKey) { mutableStateOf(false) }
+    LaunchedEffect(maneuverKey, route?.nextManeuverDistanceMeters, state.speedMps) {
+        approachingManeuver = approachVisibility.update(maneuverKey, route != null &&
+            RouteLaneGuidance.visible(route.nextManeuverDistanceMeters, state.speedMps, route.arrived))
+    }
+    val approachLanes = if (approachingManeuver && maneuverKey != null) route?.nextLanes.orEmpty() else emptyList()
     val hasRouteLanes = approachLanes.isNotEmpty()
     val displayLaneCount = if (hasRouteLanes) approachLanes.size else laneCount
     val displayTargetLanes = approachLanes.mapIndexedNotNull { i, lane -> (i + 1).takeIf { lane.valid } }.toSet()
@@ -1076,7 +1084,7 @@ private fun NavigationScreen(
                     routeUi.error?.let { Text(it, color = NavAmber, fontSize = 12.sp, maxLines = 2) }
                 }
             }
-            val showLaneDiagram = approachingManeuver && displayLaneCount != null
+            val showLaneDiagram = hasRouteLanes
             CompactLaneOverlay(
                 state = state,
                 laneNumber = displayLaneNumber,
@@ -1093,6 +1101,7 @@ private fun NavigationScreen(
                 compact = foldedCompact,
                 showDiagram = showLaneDiagram,
                 routeApproach = hasRouteLanes,
+                awaitingRouteLanes = approachingManeuver && maneuverKey != null && !hasRouteLanes,
             )
         }
         }
@@ -1247,6 +1256,7 @@ private fun CompactLaneOverlay(
     compact: Boolean = false,
     showDiagram: Boolean = true,
     routeApproach: Boolean = false,
+    awaitingRouteLanes: Boolean = false,
 ) {
     val uncertain = stale || weak
     val laneKnown = active &&
@@ -1280,6 +1290,7 @@ private fun CompactLaneOverlay(
             ) {
                 Text(
                     when {
+                        awaitingRouteLanes -> "LANE GUIDANCE UNAVAILABLE HERE"
                         routeApproach && targetTitle != null -> targetTitle
                         !active -> "LANE GUIDANCE · waiting for live view"
                         uncertain -> "LANE UNCERTAIN · holding last good view"
