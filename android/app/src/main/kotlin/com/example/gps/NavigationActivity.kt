@@ -220,6 +220,7 @@ class NavigationActivity : ComponentActivity() {
         routeQuery = recovered?.destinationName.orEmpty()
         routeUi = NavigationRouteUi(summary = recovered)
         autoRecordingForRoute = recovered != null && recordingActive
+        DriveSessionRuntime.addListener(runtimeListener)
         if (recovered != null) logRouteEvent("ROUTE_RECOVERED")
 
         MapLibre.getInstance(this)
@@ -330,7 +331,6 @@ class NavigationActivity : ComponentActivity() {
         uiState = DriveSessionRuntime.latest() ?: store.load()
         sessionActive = store.isActive()
         recordingActive = store.isRecording()
-        DriveSessionRuntime.addListener(runtimeListener)
         if (!liveViewStoppedByUser && !pendingStart) {
             if (hasFineLocationPermission()) {
                 // Keep Live View automatic, but sensing-only. A selected route
@@ -367,7 +367,9 @@ class NavigationActivity : ComponentActivity() {
             stopDrive()
         }
         if (store.isActive()) routeUi.summary?.let { navigationStore.save(it) }
-        DriveSessionRuntime.removeListener(runtimeListener)
+        // Keep the runtime listener attached while a route is backgrounded so
+        // route progress, maneuver distance and reroute state do not freeze
+        // when the screen turns off or another app covers LaneGPS.
         mapView.onStop()
         if (!isChangingConfigurations) liveViewStoppedByUser = false
         super.onStop()
@@ -401,6 +403,7 @@ class NavigationActivity : ComponentActivity() {
 
     override fun onDestroy() {
         routeGeneration++
+        DriveSessionRuntime.removeListener(runtimeListener)
         routeExecutor.shutdownNow()
         trafficOverlay.destroy()
         mapView.onDestroy()
