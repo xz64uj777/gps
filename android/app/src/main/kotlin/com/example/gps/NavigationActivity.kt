@@ -97,8 +97,8 @@ private var NavAmber by mutableStateOf(Color(0xFFFFB648))
 private var NavRed by mutableStateOf(Color(0xFFFF6B6B))
 private var NavMuted by mutableStateOf(Color(0xFF9AA6BA))
 private var NavLine by mutableStateOf(Color(0xFF2A3548))
-private var NavText by mutableStateOf(NavText)
-private var NavInset by mutableStateOf(NavInset)
+private var NavText by mutableStateOf(Color.White)
+private var NavInset by mutableStateOf(Color(0xFF0D1422))
 
 private fun applyNavigationPalette(light: Boolean) {
     if (light) {
@@ -125,8 +125,8 @@ private fun applyNavigationPalette(light: Boolean) {
         NavRed = Color(0xFFFF6B6B)
         NavMuted = Color(0xFF9AA6BA)
         NavLine = Color(0xFF2A3548)
-        NavText = NavText
-        NavInset = NavInset
+        NavText = Color.White
+        NavInset = Color(0xFF0D1422)
     }
 }
 
