@@ -29,7 +29,7 @@ class StreetViewSettings(context: Context) {
 object StreetViewStaticUrls {
     fun metadataUrl(key: String, lat: Double, lon: Double): String =
         "https://maps.googleapis.com/maps/api/streetview/metadata?location=" +
-            "\${"%.7f".format(java.util.Locale.US, lat)},\${"%.7f".format(java.util.Locale.US, lon)}" +
+            String.format(java.util.Locale.US, "%.7f,%.7f", lat, lon) +
             "&key=" + URLEncoder.encode(key.trim(), "UTF-8")
 
     fun imageUrl(
@@ -39,9 +39,9 @@ object StreetViewStaticUrls {
         width: Int = 640,
         height: Int = 360,
     ): String =
-        "https://maps.googleapis.com/maps/api/streetview?size=\${width}x\${height}" +
+        "https://maps.googleapis.com/maps/api/streetview?size=" + width + "x" + height +
             "&pano=" + URLEncoder.encode(panoId, "UTF-8") +
-            "&heading=\${"%.1f".format(java.util.Locale.US, heading)}" +
+            "&heading=" + String.format(java.util.Locale.US, "%.1f", heading) +
             "&fov=80&pitch=0&return_error_code=true&key=" +
             URLEncoder.encode(key.trim(), "UTF-8")
 
