@@ -87,16 +87,48 @@ import org.maplibre.android.style.sources.GeoJsonSource
 import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 
-private val NavBg = Color(0xFF080D15)
-private val NavCard = Color(0xFF121A28)
-private val NavCardStrong = Color(0xFF18243A)
-private val NavBlue = Color(0xFF5BA8FF)
-private val NavBlueSoft = Color(0xFFA7D2FF)
-private val NavGreen = Color(0xFF58D47F)
-private val NavAmber = Color(0xFFFFB648)
-private val NavRed = Color(0xFFFF6B6B)
-private val NavMuted = Color(0xFF9AA6BA)
-private val NavLine = Color(0xFF2A3548)
+private var NavBg by mutableStateOf(Color(0xFF080D15))
+private var NavCard by mutableStateOf(Color(0xFF121A28))
+private var NavCardStrong by mutableStateOf(Color(0xFF18243A))
+private var NavBlue by mutableStateOf(Color(0xFF5BA8FF))
+private var NavBlueSoft by mutableStateOf(Color(0xFFA7D2FF))
+private var NavGreen by mutableStateOf(Color(0xFF58D47F))
+private var NavAmber by mutableStateOf(Color(0xFFFFB648))
+private var NavRed by mutableStateOf(Color(0xFFFF6B6B))
+private var NavMuted by mutableStateOf(Color(0xFF9AA6BA))
+private var NavLine by mutableStateOf(Color(0xFF2A3548))
+private var NavText by mutableStateOf(NavText)
+private var NavInset by mutableStateOf(NavInset)
+
+private fun applyNavigationPalette(light: Boolean) {
+    if (light) {
+        NavBg = Color(0xFFF3F6FA)
+        NavCard = Color(0xFFFFFFFF)
+        NavCardStrong = Color(0xFFE7EDF5)
+        NavBlue = Color(0xFF0067C5)
+        NavBlueSoft = Color(0xFF275E91)
+        NavGreen = Color(0xFF16733A)
+        NavAmber = Color(0xFF9A5700)
+        NavRed = Color(0xFFB3261E)
+        NavMuted = Color(0xFF5D6877)
+        NavLine = Color(0xFFD3DCE8)
+        NavText = Color(0xFF10151C)
+        NavInset = Color(0xFFE9EEF5)
+    } else {
+        NavBg = Color(0xFF080D15)
+        NavCard = Color(0xFF121A28)
+        NavCardStrong = Color(0xFF18243A)
+        NavBlue = Color(0xFF5BA8FF)
+        NavBlueSoft = Color(0xFFA7D2FF)
+        NavGreen = Color(0xFF58D47F)
+        NavAmber = Color(0xFFFFB648)
+        NavRed = Color(0xFFFF6B6B)
+        NavMuted = Color(0xFF9AA6BA)
+        NavLine = Color(0xFF2A3548)
+        NavText = NavText
+        NavInset = NavInset
+    }
+}
 
 private data class NavigationRouteUi(
     val planning: Boolean = false,
@@ -111,6 +143,8 @@ class NavigationActivity : ComponentActivity() {
     private var routeGeneration = 0L
     private var lastRouteCheckpoint = 0L
     private lateinit var store: DriveSessionStore
+    private lateinit var appearanceSettings: NavigationAppearanceSettings
+    private var lightMode by mutableStateOf(false)
     private val routeClient = OpenRouteClient()
     private val routeExecutor = Executors.newSingleThreadExecutor()
 
@@ -175,6 +209,9 @@ class NavigationActivity : ComponentActivity() {
         locationPromptedThisVisit = savedInstanceState?.getBoolean("location_prompted", false) ?: false
         navigationStore = ActiveNavigationStore(this)
         store = DriveSessionStore(this)
+        appearanceSettings = NavigationAppearanceSettings(this)
+        lightMode = appearanceSettings.lightMode()
+        applyNavigationPalette(lightMode)
         uiState = DriveSessionRuntime.latest() ?: store.load()
         sessionActive = store.isActive()
         recordingActive = store.isRecording()
@@ -227,6 +264,8 @@ class NavigationActivity : ComponentActivity() {
                     secondary = NavGreen,
                     background = NavBg,
                     surface = NavCard,
+                    onBackground = NavText,
+                    onSurface = NavText,
                 )
             ) {
                 NavigationScreen(
@@ -272,6 +311,12 @@ class NavigationActivity : ComponentActivity() {
                     onStopNavigation = { clearRoute() },
                     onEnableLocation = { requestDrivePermissions(true) },
                     onOpenDiagnostics = { startActivity(Intent(this, MainActivity::class.java)) },
+                    lightMode = lightMode,
+                    onAppearanceChanged = { useLight ->
+                        appearanceSettings.setLightMode(useLight)
+                        applyNavigationPalette(useLight)
+                        lightMode = useLight
+                    },
                 )
             }
         }
@@ -902,6 +947,8 @@ private fun NavigationScreen(
     onStopNavigation: () -> Unit,
     onEnableLocation: () -> Unit,
     onOpenDiagnostics: () -> Unit,
+    lightMode: Boolean,
+    onAppearanceChanged: (Boolean) -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var showOptions by rememberSaveable { mutableStateOf(false) }
@@ -1085,18 +1132,18 @@ private fun NavigationScreen(
                     )
                     route?.let {
                         Text(com.example.gps.laneengine.ManeuverInstruction.symbol(it.nextManeuver),
-                            color = Color.White, fontSize = if (foldedCompact) 24.sp else 36.sp, fontWeight = FontWeight.Bold)
+                            color = NavText, fontSize = if (foldedCompact) 24.sp else 36.sp, fontWeight = FontWeight.Bold)
                         if (!it.arrived && it.distanceMeters <= 500.0) {
                             Text(it.destinationSide?.let { side -> "Destination on the $side" }
                                 ?: "Destination side unavailable", color = NavBlueSoft, fontSize = 13.sp)
                         }
                     }
                     Text(route?.nextManeuver ?: if (sessionActive) "Live road follow" else "Live view · no destination needed",
-                        color = Color.White, fontSize = if (foldedCompact) 15.sp else 21.sp, fontWeight = FontWeight.Bold,
+                        color = NavText, fontSize = if (foldedCompact) 15.sp else 21.sp, fontWeight = FontWeight.Bold,
                         maxLines = if (foldedCompact) 1 else 2)
                     route?.let {
                         Text("${formatNavDistance(it.nextManeuverDistanceMeters)} · ${it.nextRoad}",
-                            color = Color.White, fontSize = if (foldedCompact) 11.sp else 14.sp, maxLines = 1)
+                            color = NavText, fontSize = if (foldedCompact) 11.sp else 14.sp, maxLines = 1)
                     }
                     routeUi.error?.let { Text(it, color = NavAmber, fontSize = 12.sp, maxLines = 2) }
                 }
@@ -1151,7 +1198,7 @@ private fun NavigationScreen(
                         Text(
                             "${if (gpsStale || !sessionActive) "—" else ((state.speedMps ?: 0f) * 2.23694f).roundToInt().toString()} mph" +
                                 (route?.let { " · ${formatNavDistance(it.distanceMeters)} · ${formatNavDuration(it.durationSeconds)}" } ?: ""),
-                            modifier = Modifier.weight(1f), color = Color.White, fontSize = 13.sp,
+                            modifier = Modifier.weight(1f), color = NavText, fontSize = 13.sp,
                             fontWeight = FontWeight.Bold,
                         )
                         if (!followingLocation) {
@@ -1192,7 +1239,7 @@ private fun NavigationScreen(
                     Text(
                         "${if (gpsStale || !sessionActive) "—" else ((state.speedMps ?: 0f) * 2.23694f).roundToInt().toString()} mph" +
                             (route?.let { " · ${formatNavDistance(it.distanceMeters)} · ${formatNavDuration(it.durationSeconds)}" } ?: ""),
-                        color = Color.White, fontWeight = FontWeight.Bold, fontSize = if (foldedCompact) 13.sp else 17.sp,
+                        color = NavText, fontWeight = FontWeight.Bold, fontSize = if (foldedCompact) 13.sp else 17.sp,
                     )
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         OutlinedButton(onClick = { showOptions = true }, modifier = Modifier.weight(1f)) {
@@ -1241,7 +1288,8 @@ private fun NavigationScreen(
             Surface(Modifier.fillMaxSize().systemBarsPadding().imePadding(), color = NavBg) {
                 Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp)) {
                     TextButton(onClick = { showOptions = false }) { Text("BACK TO MAP") }
-                    Text("Options", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                    Text("Options", color = NavText, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                    AppearanceOptions(lightMode, onAppearanceChanged)
                     VoiceOptions(voiceController, voiceState)
                     TrafficOptions(onTrafficChanged)
                     StreetViewOptions()
@@ -1251,7 +1299,7 @@ private fun NavigationScreen(
                     Text("Normal voice: fewer turn cues, with an extra early highway-exit warning.", color = NavMuted, fontSize = 13.sp)
 
                     HorizontalDivider()
-                    Text("GPS diagnostics", color = Color.White, fontWeight = FontWeight.Bold)
+                    Text("GPS diagnostics", color = NavText, fontWeight = FontWeight.Bold)
                     Text("Accuracy: ${state.accuracyMeters?.roundToInt()?.let { "±$it m" } ?: "waiting"} · Satellites: ${state.satellitesUsedInFix}", color = NavMuted)
                     Text(state.laneDataStatus, color = NavMuted, fontSize = 12.sp)
                     Text("Trip logs are saved in Downloads/LaneGPS.", color = NavMuted, fontSize = 12.sp)
@@ -1301,7 +1349,7 @@ private fun DestinationArrivalCard(route: OpenRouteClient.RouteSummary) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     "${if (route.arrived) "DESTINATION" else "ARRIVING SOON"} · ${route.destinationName}",
-                    color = Color.White,
+                    color = NavText,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
@@ -1541,7 +1589,7 @@ private fun NextMoveStrip(
             color = when {
                 uncertain -> NavAmber
                 alreadyCorrect -> NavGreen
-                else -> Color.White
+                else -> NavText
             },
             fontWeight = FontWeight.ExtraBold,
             fontSize = if (compact) 12.sp else if (alreadyCorrect) 12.sp else 16.sp,
@@ -1595,8 +1643,8 @@ private fun LaneRoadDiagram(
             }
         }
 
-        drawLine(Color.White, Offset(nearLeft, bottom), Offset(farLeft, top), 2.dp.toPx())
-        drawLine(Color.White, Offset(nearRight, bottom), Offset(farRight, top), 2.dp.toPx())
+        drawLine(NavText, Offset(nearLeft, bottom), Offset(farLeft, top), 2.dp.toPx())
+        drawLine(NavText, Offset(nearRight, bottom), Offset(farRight, top), 2.dp.toPx())
         if (laneCount != null) {
             for (boundary in 1 until laneCount) {
                 val fraction = boundary.toFloat() / laneCount
@@ -1621,7 +1669,7 @@ private fun LaneRoadDiagram(
                 val x = farLeft + (farRight - farLeft) * fraction
                 val shaftBottom = top + 34.dp.toPx()
                 val shaftTop = top + 12.dp.toPx()
-                val baseColor = if (lane in targetLanes) Color.White else NavBlueSoft.copy(alpha = 0.75f)
+                val baseColor = if (lane in targetLanes) NavText else NavBlueSoft.copy(alpha = 0.75f)
                 val c = if (dimmed) baseColor.copy(alpha = 0.28f) else baseColor
                 val stroke = if (lane in targetLanes) 2.4.dp.toPx() else 1.6.dp.toPx()
                 val through = tokens.any { it == "through" }
@@ -1748,7 +1796,7 @@ private fun NavigationHeader(
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         Column {
-            Text("LaneGPS", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold)
+            Text("LaneGPS", color = NavText, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold)
             Text(
                 when {
                     sessionActive && routed -> "3D lane-first navigation"
@@ -1792,7 +1840,7 @@ private fun StatusBanner(title: String, text: String, color: Color) {
     ) {
         Column(Modifier.padding(12.dp)) {
             Text(title, color = color, fontWeight = FontWeight.ExtraBold)
-            Text(text, color = Color.White, fontSize = 12.sp)
+            Text(text, color = NavText, fontSize = 12.sp)
         }
     }
 }
@@ -1818,7 +1866,7 @@ private fun ManeuverCard(
                 )
                 Text(
                     if (sessionActive) "Live road follow" else "Destination optional",
-                    color = Color.White,
+                    color = NavText,
                     fontWeight = FontWeight.ExtraBold,
                     fontSize = 24.sp,
                 )
@@ -1855,7 +1903,7 @@ private fun ManeuverCard(
             Spacer(Modifier.height(4.dp))
             Text(
                 route.nextManeuver,
-                color = Color.White,
+                color = NavText,
                 fontWeight = FontWeight.ExtraBold,
                 fontSize = 26.sp,
                 lineHeight = 29.sp,
@@ -1956,7 +2004,7 @@ private fun LaneCard(
                 if (laneKnown) {
                     Text(
                         "${(state.laneConfidence.coerceIn(0f, 1f) * 100).roundToInt()}%",
-                        color = Color.White,
+                        color = NavText,
                         fontWeight = FontWeight.Bold,
                     )
                 }
@@ -1991,13 +2039,13 @@ private fun LaneCard(
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text(
                                     "↑",
-                                    color = if (current) Color.White else NavBlueSoft,
+                                    color = if (current) NavText else NavBlueSoft,
                                     fontWeight = FontWeight.ExtraBold,
                                     fontSize = 26.sp,
                                 )
                                 Text(
                                     "${index + 1}",
-                                    color = if (current) Color.White else NavMuted,
+                                    color = if (current) NavText else NavMuted,
                                     fontWeight = if (current) FontWeight.ExtraBold else FontWeight.Bold,
                                     fontSize = 13.sp,
                                 )
@@ -2021,7 +2069,7 @@ private fun LaneCard(
                     Modifier
                         .fillMaxWidth()
                         .height(96.dp)
-                        .background(Color(0xFF0C1220), RoundedCornerShape(12.dp)),
+                        .background(NavInset, RoundedCornerShape(12.dp)),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
@@ -2112,7 +2160,7 @@ private fun DestinationCard(
             if (compact) {
                 Surface(
                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                    color = Color(0xFF0D1422),
+                    color = NavInset,
                     shape = RoundedCornerShape(10.dp),
                     border = androidx.compose.foundation.BorderStroke(1.dp, NavLine),
                 ) {
@@ -2128,7 +2176,7 @@ private fun DestinationCard(
                                 .onFocusChanged { queryFocused = it.isFocused; onEditingChanged(it.isFocused) },
                             singleLine = true,
                             enabled = !routeUi.planning,
-                            textStyle = LocalTextStyle.current.copy(color = Color.White, fontSize = 13.sp),
+                            textStyle = LocalTextStyle.current.copy(color = NavText, fontSize = 13.sp),
                             cursorBrush = SolidColor(NavBlueSoft),
                             decorationBox = { inner ->
                                 Box(contentAlignment = Alignment.CenterStart) {
@@ -2206,7 +2254,7 @@ private fun DestinationCard(
             if (showSuggestions && !routeUi.planning) {
                 Spacer(Modifier.height(6.dp))
                 Surface(
-                    color = Color(0xFF0D1422),
+                    color = NavInset,
                     shape = RoundedCornerShape(12.dp),
                     tonalElevation = 2.dp,
                 ) {
@@ -2242,7 +2290,7 @@ private fun DestinationCard(
                                     Column(Modifier.fillMaxWidth()) {
                                         Text(
                                             item.label,
-                                            color = Color.White,
+                                            color = NavText,
                                             fontSize = 12.sp,
                                             maxLines = 2,
                                             textAlign = TextAlign.Start,
@@ -2295,7 +2343,7 @@ private fun DestinationCard(
                                         Column(Modifier.fillMaxWidth()) {
                                             Text(
                                                 suggestion.label,
-                                                color = Color.White,
+                                                color = NavText,
                                                 fontSize = 12.sp,
                                                 maxLines = 1,
                                                 modifier = Modifier.fillMaxWidth(),
@@ -2404,11 +2452,11 @@ private fun CompactMetrics(state: GnssUiState, gpsStale: Boolean) {
 private fun NavMetric(value: String, label: String, modifier: Modifier) {
     Column(
         modifier
-            .background(Color(0xFF0D1422), RoundedCornerShape(12.dp))
+            .background(NavInset, RoundedCornerShape(12.dp))
             .padding(horizontal = 9.dp, vertical = 9.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text(value, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, maxLines = 1)
+        Text(value, color = NavText, fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, maxLines = 1)
         Text(label, color = NavMuted, fontSize = 9.sp, maxLines = 1)
     }
 }
@@ -2429,6 +2477,30 @@ private fun formatNavDuration(seconds: Double): String {
     return when {
         minutes < 60 -> "$minutes min"
         else -> "${minutes / 60}h ${minutes % 60}m"
+    }
+}
+
+
+@Composable
+private fun AppearanceOptions(lightMode: Boolean, onChanged: (Boolean) -> Unit) {
+    Column(
+        Modifier.fillMaxWidth().padding(vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text("Appearance", color = NavText, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(if (lightMode) "Light mode" else "Dark mode", color = NavText)
+            Switch(checked = lightMode, onCheckedChange = onChanged)
+        }
+        Text(
+            "Changes LaneGPS controls and panels. Your choice is saved.",
+            color = NavMuted,
+            fontSize = 12.sp,
+        )
     }
 }
 
@@ -2508,7 +2580,7 @@ private fun TrafficOptions(onChanged: () -> Unit) {
     var enabled by remember { mutableStateOf(settings.enabled()) }
     var message by remember { mutableStateOf("") }
     Column(Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Live traffic", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Text("Live traffic", color = NavText, fontSize = 20.sp, fontWeight = FontWeight.Bold)
         Text("TomTom congestion overlay: green = flowing, yellow/orange = slower, red = heavy traffic. Coverage varies. Route times and rerouting still use the standard route service.", color = NavMuted, fontSize = 13.sp)
         OutlinedTextField(value = key, onValueChange = { key = it; message = "" },
             label = { Text("TomTom Traffic API key") }, singleLine = true,
@@ -2516,7 +2588,7 @@ private fun TrafficOptions(onChanged: () -> Unit) {
             modifier = Modifier.fillMaxWidth())
         Row(verticalAlignment = Alignment.CenterVertically) {
             Switch(checked = enabled, onCheckedChange = { enabled = it })
-            Text("Show traffic on the map", color = Color.White, modifier = Modifier.padding(start = 8.dp))
+            Text("Show traffic on the map", color = NavText, modifier = Modifier.padding(start = 8.dp))
         }
         Button(onClick = {
             if (enabled && key.isBlank()) message = "Enter your TomTom Traffic key first."
@@ -2549,7 +2621,7 @@ private fun StreetViewOptions() {
         Modifier.fillMaxWidth().padding(vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text("Destination photo", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Text("Destination photo", color = NavText, fontSize = 20.sp, fontWeight = FontWeight.Bold)
         Text(
             "Shows one Google Street View still image when you get within about 800 ft of the destination. No interactive panorama is loaded.",
             color = NavMuted,
@@ -2565,7 +2637,7 @@ private fun StreetViewOptions() {
         )
         Row(verticalAlignment = Alignment.CenterVertically) {
             Switch(checked = enabled, onCheckedChange = { enabled = it })
-            Text("Show destination photo", color = Color.White, modifier = Modifier.padding(start = 8.dp))
+            Text("Show destination photo", color = NavText, modifier = Modifier.padding(start = 8.dp))
         }
         Button(onClick = {
             if (enabled && key.isBlank()) {
