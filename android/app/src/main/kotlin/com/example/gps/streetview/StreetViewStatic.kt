@@ -18,7 +18,7 @@ class StreetViewSettings(context: Context) {
     private val prefs = context.getSharedPreferences("streetview", Context.MODE_PRIVATE)
 
     fun key(): String = runCatching { file.readText().trim() }.getOrDefault("")
-    fun enabled(): Boolean = prefs.getBoolean("enabled", false)
+    fun enabled(): Boolean = prefs.getBoolean("enabled", true)
 
     fun save(key: String, enabled: Boolean) {
         if (key.isBlank()) file.delete() else file.writeText(key.trim())
