@@ -4,6 +4,7 @@ import com.example.gps.laneengine.NavigationFixQuality
 import android.animation.ValueAnimator
 import android.view.animation.LinearInterpolator
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.CornerRadius
@@ -45,6 +46,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -1241,6 +1244,7 @@ private fun NavigationScreen(
                     Text("Options", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
                     VoiceOptions(voiceController, voiceState)
                     TrafficOptions(onTrafficChanged)
+                    StreetViewOptions()
                     if (!state.permissionFine && !sessionActive) {
                         TextButton(onClick = onEnableLocation) { Text("Enable precise location") }
                     }
@@ -1261,23 +1265,87 @@ private fun NavigationScreen(
 private fun DestinationArrivalCard(route: OpenRouteClient.RouteSummary) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val destinationKey = "${route.destinationLat}|${route.destinationLon}"
+    val settings = remember { com.example.gps.streetview.StreetViewSettings(context.applicationContext) }
+    val client = remember { com.example.gps.streetview.StreetViewStaticClient() }
     var dismissed by rememberSaveable(destinationKey) { mutableStateOf(false) }
-    var failed by remember(destinationKey) { mutableStateOf(false) }
+    var preview by remember(destinationKey) {
+        mutableStateOf<com.example.gps.streetview.StreetViewPreview?>(null)
+    }
+    var status by remember(destinationKey) { mutableStateOf("Destination photo") }
+    var attempted by remember(destinationKey) { mutableStateOf(false) }
+
+    LaunchedEffect(destinationKey) {
+        val key = settings.key()
+        if (!settings.enabled() || key.isBlank() || attempted) return@LaunchedEffect
+        attempted = true
+        status = "Loading destination photo…"
+        when (val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            client.load(key, route.destinationLat, route.destinationLon)
+        }) {
+            is com.example.gps.streetview.StreetViewStaticClient.Result.Success -> {
+                preview = result.preview
+                status = result.preview.copyright
+            }
+            com.example.gps.streetview.StreetViewStaticClient.Result.NoImagery -> {
+                status = "No Street View image near destination"
+            }
+            is com.example.gps.streetview.StreetViewStaticClient.Result.Error -> {
+                status = result.message
+            }
+        }
+    }
+
     if (dismissed) return
     Surface(color = NavCardStrong, shape = RoundedCornerShape(12.dp)) {
-        Column(Modifier.padding(8.dp)) {
-            Text("${if (route.arrived) "DESTINATION" else "ARRIVING SOON"} · ${route.destinationName}",
-                color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 2)
-            Text(if (failed) "Could not open Street View" else "Street-level imagery opens in Google Maps, where available.",
-                color = NavMuted, fontSize = 11.sp)
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Column(Modifier.padding(7.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "${if (route.arrived) "DESTINATION" else "ARRIVING SOON"} · ${route.destinationName}",
+                    color = Color.White,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(
+                    onClick = { dismissed = true },
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                ) { Text("×", fontSize = 18.sp) }
+            }
+
+            preview?.let { image ->
+                Image(
+                    bitmap = image.bitmap.asImageBitmap(),
+                    contentDescription = "Street View destination photo",
+                    modifier = Modifier.fillMaxWidth().height(150.dp),
+                    contentScale = ContentScale.Crop,
+                )
+            }
+
+            Text(
+                when {
+                    preview != null -> status
+                    !settings.enabled() || settings.key().isBlank() -> "Destination photo is off · enable it in Options"
+                    else -> status
+                },
+                color = NavMuted,
+                fontSize = 9.sp,
+                maxLines = 1,
+            )
+
+            if (preview == null) {
                 TextButton(onClick = {
-                    failed = runCatching {
-                        context.startActivity(Intent(Intent.ACTION_VIEW,
-                            android.net.Uri.parse(DestinationStreetView.url(route.destinationLat, route.destinationLon))))
-                    }.isFailure
-                }) { Text("View Street View") }
-                TextButton(onClick = { dismissed = true }) { Text("Dismiss") }
+                    runCatching {
+                        context.startActivity(
+                            Intent(
+                                Intent.ACTION_VIEW,
+                                android.net.Uri.parse(
+                                    DestinationStreetView.url(route.destinationLat, route.destinationLon)
+                                )
+                            )
+                        )
+                    }
+                }) { Text("Open Street View", fontSize = 10.sp) }
             }
         }
     }
