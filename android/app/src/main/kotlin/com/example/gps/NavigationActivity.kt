@@ -2533,3 +2533,67 @@ private fun TrafficOptions(onChanged: () -> Unit) {
         Text("Your key stays on this phone. Traffic refreshes every two minutes while this screen is active. Provider usage limits apply.", color = NavMuted, fontSize = 12.sp)
     }
 }
+
+
+@Composable
+private fun StreetViewOptions() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val settings = remember {
+        com.example.gps.streetview.StreetViewSettings(context.applicationContext)
+    }
+    var key by remember { mutableStateOf(settings.key()) }
+    var enabled by remember { mutableStateOf(settings.enabled()) }
+    var message by remember { mutableStateOf("") }
+
+    Column(
+        Modifier.fillMaxWidth().padding(vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text("Destination photo", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Text(
+            "Shows one Google Street View still image when you get within about 800 ft of the destination. No interactive panorama is loaded.",
+            color = NavMuted,
+            fontSize = 13.sp,
+        )
+        OutlinedTextField(
+            value = key,
+            onValueChange = { key = it; message = "" },
+            label = { Text("Google Street View Static API key") },
+            singleLine = true,
+            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Switch(checked = enabled, onCheckedChange = { enabled = it })
+            Text("Show destination photo", color = Color.White, modifier = Modifier.padding(start = 8.dp))
+        }
+        Button(onClick = {
+            if (enabled && key.isBlank()) {
+                message = "Enter your Google Street View Static API key first."
+            } else {
+                settings.save(key, enabled)
+                message = if (enabled) {
+                    "Saved. LaneGPS will load one photo near arrival when Street View is available."
+                } else {
+                    "Destination photo disabled."
+                }
+            }
+        }) { Text("SAVE DESTINATION PHOTO") }
+
+        TextButton(onClick = {
+            key = ""
+            enabled = false
+            settings.save("", false)
+            message = "Key removed."
+        }) { Text("REMOVE KEY") }
+
+        if (message.isNotBlank()) {
+            Text(message, color = NavBlueSoft, fontSize = 13.sp)
+        }
+        Text(
+            "The key stays on this phone. LaneGPS checks Street View metadata first and only requests the image when imagery is available.",
+            color = NavMuted,
+            fontSize = 12.sp,
+        )
+    }
+}
