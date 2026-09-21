@@ -19,7 +19,7 @@ class TrafficSettings(context: Context) {
     private val file = File(context.noBackupFilesDir, "traffic-key")
     private val prefs = context.getSharedPreferences("traffic", Context.MODE_PRIVATE)
     fun key(): String = runCatching { file.readText().trim() }.getOrDefault("")
-    fun enabled(): Boolean = prefs.getBoolean("enabled", false)
+    fun enabled(): Boolean = prefs.getBoolean("enabled", true)
     fun save(key: String, enabled: Boolean) {
         if (key.isBlank()) file.delete() else file.writeText(key.trim())
         prefs.edit().putBoolean("enabled", enabled && key.isNotBlank()).apply()
