@@ -22,6 +22,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.example.gps.route.DestinationStreetView
 import com.example.gps.route.LaneApproachVisibility
 import com.example.gps.route.RouteLaneGuidance
 import com.example.gps.route.ActiveNavigationStore
@@ -996,6 +997,19 @@ private fun NavigationScreen(
     }
     val approachLanes = if (approachingManeuver && maneuverKey != null) route?.nextLanes.orEmpty() else emptyList()
     val hasRouteLanes = approachLanes.isNotEmpty()
+    val lanePanelStatus = when {
+        maneuverKey == null -> "INACTIVE"
+        !approachingManeuver -> "BEFORE_APPROACH"
+        !hasRouteLanes -> "NO_ROUTE_LANE_DATA"
+        else -> "SHOWING_ROUTE_LANES"
+    }
+    LaunchedEffect(lanePanelStatus, maneuverKey) {
+        NavigationTelemetryRuntime.lanePanel(lanePanelStatus)
+    }
+    DisposableEffect(Unit) {
+        onDispose { NavigationTelemetryRuntime.lanePanel("SCREEN_CLOSED") }
+    }
+
     val displayLaneCount = if (hasRouteLanes) approachLanes.size else laneCount
     val displayTargetLanes = approachLanes.mapIndexedNotNull { i, lane -> (i + 1).takeIf { lane.valid } }.toSet()
     val displayTurnHints = if (hasRouteLanes) RouteLaneGuidance.hints(approachLanes) else state.laneTurnHints
@@ -1103,6 +1117,10 @@ private fun NavigationScreen(
                 routeApproach = hasRouteLanes,
                 awaitingRouteLanes = approachingManeuver && maneuverKey != null && !hasRouteLanes,
             )
+            route?.takeIf { !routeUi.rerouting && DestinationStreetView.nearArrival(it.distanceMeters) }?.let {
+                DestinationArrivalCard(it)
+            }
+
         }
         }
         Surface(
@@ -1234,6 +1252,32 @@ private fun NavigationScreen(
                     Text(state.laneDataStatus, color = NavMuted, fontSize = 12.sp)
                     Text("Trip logs are saved in Downloads/LaneGPS.", color = NavMuted, fontSize = 12.sp)
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DestinationArrivalCard(route: OpenRouteClient.RouteSummary) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val destinationKey = "${route.destinationLat}|${route.destinationLon}"
+    var dismissed by rememberSaveable(destinationKey) { mutableStateOf(false) }
+    var failed by remember(destinationKey) { mutableStateOf(false) }
+    if (dismissed) return
+    Surface(color = NavCardStrong, shape = RoundedCornerShape(12.dp)) {
+        Column(Modifier.padding(8.dp)) {
+            Text("${if (route.arrived) "DESTINATION" else "ARRIVING SOON"} · ${route.destinationName}",
+                color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 2)
+            Text(if (failed) "Could not open Street View" else "Street-level imagery opens in Google Maps, where available.",
+                color = NavMuted, fontSize = 11.sp)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                TextButton(onClick = {
+                    failed = runCatching {
+                        context.startActivity(Intent(Intent.ACTION_VIEW,
+                            android.net.Uri.parse(DestinationStreetView.url(route.destinationLat, route.destinationLon))))
+                    }.isFailure
+                }) { Text("View Street View") }
+                TextButton(onClick = { dismissed = true }) { Text("Dismiss") }
             }
         }
     }

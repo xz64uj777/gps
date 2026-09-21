@@ -22,10 +22,17 @@ object NavigationTelemetryRuntime {
         val arrived: Boolean = false,
         val rerouteCount: Int = 0,
         val updatedAtMillis: Long = 0L,
+        val routeLaneCount: Int = 0,
+        val routeLaneChoices: String = "",
+        val routeLaneIndications: String = "",
     )
 
     @Volatile
     private var latest = Snapshot()
+
+    @Volatile private var lanePanelStatus = "INACTIVE"
+    fun lanePanel(status: String) { lanePanelStatus = status }
+    fun lanePanelStatus(): String = lanePanelStatus
 
     fun snapshot(): Snapshot = latest
 
@@ -35,6 +42,7 @@ object NavigationTelemetryRuntime {
 
     fun resetForDrive() {
         latest = Snapshot()
+        lanePanelStatus = "INACTIVE"
     }
 
     fun publish(
@@ -50,6 +58,9 @@ object NavigationTelemetryRuntime {
             destination = route.destinationName,
             nextManeuver = route.nextManeuver,
             nextRoad = route.nextRoad,
+            routeLaneCount = route.nextLanes.size,
+            routeLaneChoices = route.nextLanes.mapIndexedNotNull { i, lane -> (i + 1).takeIf { lane.valid } }.joinToString("|"),
+            routeLaneIndications = RouteLaneGuidance.hints(route.nextLanes).joinToString("|"),
             nextManeuverDistanceMeters = route.nextManeuverDistanceMeters,
             remainingDistanceMeters = route.distanceMeters,
             remainingSeconds = route.durationSeconds,

@@ -192,6 +192,10 @@ class DriveTelemetryRecorder(context: Context) {
             csv(laneChangeRejection),
             csv(appVersionName),
             appVersionCode.toString(),
+            nav.routeLaneCount.toString(),
+            csv(nav.routeLaneChoices),
+            csv(nav.routeLaneIndications),
+            csv(NavigationTelemetryRuntime.lanePanelStatus()),
         ).joinToString(",")
     }
 
@@ -218,6 +222,6 @@ class DriveTelemetryRecorder(context: Context) {
                 "voice_last_utterance,voice_last_result,voice_last_attempt_ms,voice_updated_at_ms," +
                 "motion_event,motion_event_sequence,lane_change_event,lane_change_event_sequence," +
                 "session_left_lateral_events,session_right_lateral_events,session_turn_events,session_rejected_motion_spikes," +
-                "lane_change_new,lane_change_map_eligible,lane_change_rejection,app_version_name,app_version_code"
+                "lane_change_new,lane_change_map_eligible,lane_change_rejection,app_version_name,app_version_code,nav_lane_count,nav_lane_choices,nav_lane_indications,lane_panel_status"
     }
 }
