@@ -63,4 +63,21 @@ class RouteLaneGuidanceTest {
         assertEquals(lanes, progressed.nextLanes)
         assertTrue(OpenRouteClient().updateProgress(progressed, 41.02, -72.0).nextLanes.isEmpty())
     }
+    @Test fun foldedPanelOnlyTreatsRealLaneChoicesAsActionable() {
+        val allStraight = listOf(
+            RouteLane(listOf("straight"), true),
+            RouteLane(listOf("straight"), true),
+            RouteLane(listOf("straight"), true),
+        )
+        val avoidRightLane = listOf(
+            RouteLane(listOf("straight"), true),
+            RouteLane(listOf("straight"), true),
+            RouteLane(listOf("slight right"), false),
+        )
+        assertFalse(RouteLaneGuidance.actionable(allStraight, "Continue on route"))
+        assertTrue(RouteLaneGuidance.actionable(allStraight, "Turn right"))
+        assertTrue(RouteLaneGuidance.actionable(avoidRightLane, "Continue on route"))
+        assertFalse(RouteLaneGuidance.actionable(emptyList(), "Turn right"))
+    }
+
 }
