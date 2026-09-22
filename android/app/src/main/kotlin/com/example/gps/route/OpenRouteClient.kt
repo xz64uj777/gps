@@ -92,10 +92,12 @@ class OpenRouteClient {
         previous: RouteSummary,
         originLat: Double,
         originLon: Double,
+        originBearingDegrees: Double? = null,
     ): RouteSummary {
         val result = route(
             originLat = originLat,
             originLon = originLon,
+            originBearingDegrees = originBearingDegrees,
             place = Place(
                 name = previous.destinationName,
                 lat = previous.destinationLat,
@@ -241,7 +243,10 @@ class OpenRouteClient {
         )
     }
 
-    private fun route(originLat: Double, originLon: Double, place: Place): RouteSummary {
+    private fun route(
+        originLat: Double, originLon: Double, place: Place,
+        originBearingDegrees: Double? = null,
+    ): RouteSummary {
         val coords = String.format(
             Locale.US,
             "%.7f,%.7f;%.7f,%.7f",
@@ -252,7 +257,8 @@ class OpenRouteClient {
         )
         val url = URL(
             "https://router.project-osrm.org/route/v1/driving/$coords" +
-                "?overview=full&geometries=geojson&alternatives=false&steps=true",
+                "?overview=full&geometries=geojson&alternatives=false&steps=true" +
+                RerouteOrigin.bearingQuery(originBearingDegrees),
         )
         val root = JSONObject(get(url))
         if (root.optString("code") != "Ok") {

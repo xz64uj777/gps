@@ -510,8 +510,15 @@ class NavigationActivity : ComponentActivity() {
         if (routeUi.rerouting) return
         routeUi = routeUi.copy(rerouting = true, error = null)
         val generation = ++routeGeneration
+        // Capture GNSS course with the request origin; never read mutable UI state
+        // later on the routing worker or substitute the phone's compass heading.
+        val originBearing = com.example.gps.route.RerouteOrigin.usableBearing(
+            uiState.bearingDegrees?.toDouble(),
+            uiState.speedMps?.toDouble(),
+            uiState.accuracyMeters?.toDouble(),
+        )
         routeExecutor.execute {
-            val result = runCatching { routeClient.reroute(previous, lat, lon) }
+            val result = runCatching { routeClient.reroute(previous, lat, lon, originBearing) }
             runOnUiThread {
                 if (isDestroyed || generation != routeGeneration || !store.isActive()) return@runOnUiThread
                 routeUi = result.fold(
