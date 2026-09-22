@@ -1158,25 +1158,29 @@ private fun NavigationScreen(
                     routeUi.error?.let { Text(it, color = NavAmber, fontSize = 12.sp, maxLines = 2) }
                 }
             }
-            val showLaneDiagram = hasRouteLanes
-            CompactLaneOverlay(
-                state = state,
-                laneNumber = displayLaneNumber,
-                laneCount = displayLaneCount,
-                stale = gpsStale,
-                weak = gpsWeak && !hasRouteLanes,
-                settling = layoutSettling && !hasRouteLanes,
-                active = sessionActive,
-                route = route,
-                targetLanes = displayTargetLanes,
-                turnHints = displayTurnHints,
-                recentConfirmedLane = if (hasRouteLanes) null else recentConfirmedLane,
-                recentConfirmedAgeMillis = lastConfirmedAgeMillis,
-                compact = foldedCompact,
-                showDiagram = showLaneDiagram,
-                routeApproach = hasRouteLanes,
-                awaitingRouteLanes = approachingManeuver && maneuverKey != null && !hasRouteLanes,
-            )
+            val actionableRouteLanes = hasRouteLanes &&
+                RouteLaneGuidance.actionable(approachLanes, route?.nextManeuver)
+            val showLanePanel = !foldedCompact || actionableRouteLanes
+            if (showLanePanel) {
+                CompactLaneOverlay(
+                    state = state,
+                    laneNumber = displayLaneNumber,
+                    laneCount = displayLaneCount,
+                    stale = gpsStale,
+                    weak = gpsWeak && !hasRouteLanes,
+                    settling = layoutSettling && !hasRouteLanes,
+                    active = sessionActive,
+                    route = route,
+                    targetLanes = displayTargetLanes,
+                    turnHints = displayTurnHints,
+                    recentConfirmedLane = if (hasRouteLanes) null else recentConfirmedLane,
+                    recentConfirmedAgeMillis = lastConfirmedAgeMillis,
+                    compact = foldedCompact,
+                    showDiagram = hasRouteLanes,
+                    routeApproach = hasRouteLanes,
+                    awaitingRouteLanes = false,
+                )
+            }
             route?.takeIf { !routeUi.rerouting && DestinationStreetView.nearArrival(it.distanceMeters) }?.let {
                 DestinationArrivalCard(it)
             }
