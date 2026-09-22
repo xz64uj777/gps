@@ -36,6 +36,18 @@ internal object RouteLaneGuidance {
         !arrived && distance.isFinite() && distance >= 0 &&
             distance <= maxOf(700.0, ((speedMps ?: 0f).coerceIn(0f, 55f) * 65.0)).coerceAtMost(2500.0)
 
+    fun actionable(lanes: List<RouteLane>, maneuver: String?): Boolean {
+        if (lanes.size < 2) return false
+        val validCount = lanes.count { it.valid }
+        if (validCount == 0) return false
+        // A restricted set of valid lanes is always actionable guidance.
+        if (validCount < lanes.size) return true
+        // If every lane is valid, only keep the panel for an actual directional maneuver.
+        val text = maneuver.orEmpty().lowercase()
+        return listOf("turn", "exit", "merge", "keep", "fork", "slight", "u-turn", "uturn")
+            .any { it in text }
+    }
+
     fun hints(lanes: List<RouteLane>): List<String> = lanes.map { lane ->
         lane.indications.joinToString(";") { when (it) { "straight" -> "through"; "uturn" -> "reverse"; "none" -> ""; else -> it.replace(' ', '_') } }
     }
