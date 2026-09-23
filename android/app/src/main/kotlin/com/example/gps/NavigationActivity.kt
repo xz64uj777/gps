@@ -1338,21 +1338,29 @@ private fun DestinationArrivalCard(route: OpenRouteClient.RouteSummary) {
 
     LaunchedEffect(destinationKey) {
         val key = settings.key()
-        if (!settings.enabled() || key.isBlank() || attempted) return@LaunchedEffect
+        if (!settings.enabled() || key.isBlank()) {
+            NavigationTelemetryRuntime.streetView("DISABLED_OR_NO_KEY")
+            return@LaunchedEffect
+        }
+        if (attempted) return@LaunchedEffect
         attempted = true
         status = "Loading destination photo…"
+        NavigationTelemetryRuntime.streetView("LOADING")
         when (val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             client.load(key, route.destinationLat, route.destinationLon)
         }) {
             is com.example.gps.streetview.StreetViewStaticClient.Result.Success -> {
                 preview = result.preview
                 status = result.preview.copyright
+                NavigationTelemetryRuntime.streetView("PHOTO_SHOWN")
             }
             com.example.gps.streetview.StreetViewStaticClient.Result.NoImagery -> {
                 status = "No Street View image near destination"
+                NavigationTelemetryRuntime.streetView("NO_IMAGERY")
             }
             is com.example.gps.streetview.StreetViewStaticClient.Result.Error -> {
                 status = result.message
+                NavigationTelemetryRuntime.streetView("ERROR:" + result.message)
             }
         }
     }
@@ -1370,7 +1378,10 @@ private fun DestinationArrivalCard(route: OpenRouteClient.RouteSummary) {
                     modifier = Modifier.weight(1f),
                 )
                 TextButton(
-                    onClick = { dismissed = true },
+                    onClick = {
+                        dismissed = true
+                        NavigationTelemetryRuntime.streetView("DISMISSED")
+                    },
                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
                 ) { Text("×", fontSize = 18.sp) }
             }
