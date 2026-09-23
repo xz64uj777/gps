@@ -31,8 +31,11 @@ object NavigationTelemetryRuntime {
     private var latest = Snapshot()
 
     @Volatile private var lanePanelStatus = "INACTIVE"
+    @Volatile private var streetViewStatus = "INACTIVE"
     fun lanePanel(status: String) { lanePanelStatus = status }
     fun lanePanelStatus(): String = lanePanelStatus
+    fun streetView(status: String) { streetViewStatus = status }
+    fun streetViewStatus(): String = streetViewStatus
 
     fun snapshot(): Snapshot = latest
 
@@ -43,6 +46,7 @@ object NavigationTelemetryRuntime {
     fun resetForDrive() {
         latest = Snapshot()
         lanePanelStatus = "INACTIVE"
+        streetViewStatus = "INACTIVE"
     }
 
     fun publish(
