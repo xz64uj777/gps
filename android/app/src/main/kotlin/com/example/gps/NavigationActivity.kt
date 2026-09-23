@@ -175,6 +175,7 @@ class NavigationActivity : ComponentActivity() {
     private var lastProgressFixTimestamp: Long? = null
     private var offRouteFixStreak = 0
     private var lastRerouteElapsed = 0L
+    private var rerouteAnnouncementSerial by mutableIntStateOf(0)
 
     private val runtimeListener: (GnssUiState) -> Unit = { state ->
         runOnUiThread {
@@ -318,6 +319,7 @@ class NavigationActivity : ComponentActivity() {
                         applyNavigationPalette(useLight)
                         lightMode = useLight
                     },
+                    rerouteAnnouncementSerial = rerouteAnnouncementSerial,
                 )
             }
         }
@@ -508,6 +510,7 @@ class NavigationActivity : ComponentActivity() {
 
     private fun reroute(previous: OpenRouteClient.RouteSummary, lat: Double, lon: Double) {
         if (routeUi.rerouting) return
+        rerouteAnnouncementSerial++
         routeUi = routeUi.copy(rerouting = true, error = null)
         val generation = ++routeGeneration
         // Capture GNSS course with the request origin; never read mutable UI state
@@ -959,6 +962,7 @@ private fun NavigationScreen(
     onOpenDiagnostics: () -> Unit,
     lightMode: Boolean,
     onAppearanceChanged: (Boolean) -> Unit,
+    rerouteAnnouncementSerial: Int,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var showOptions by rememberSaveable { mutableStateOf(false) }
@@ -1013,8 +1017,8 @@ private fun NavigationScreen(
         }
     }
 
-    LaunchedEffect(routeUi.rerouting) {
-        if (routeUi.rerouting) voiceController.announceRerouting()
+    LaunchedEffect(rerouteAnnouncementSerial) {
+        if (rerouteAnnouncementSerial > 0) voiceController.announceRerouting()
     }
 
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
