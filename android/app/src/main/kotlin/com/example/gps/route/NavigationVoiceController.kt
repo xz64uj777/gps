@@ -214,13 +214,18 @@ class NavigationVoiceController(
             add(VoiceOption(CINEMATIC_VOICE_ID, "Cinematic narrator · voice effect"))
             val selected = prefs.getString(KEY_VOICE_ID, DEFAULT_VOICE_ID)
             available.groupBy { it.locale.language to it.locale.country }.values.forEach { group ->
-                val chosen = VoiceShortlist.select(group, { it.name }, selected)
+                val chosen = VoiceShortlist.select(
+                    group,
+                    id = { it.name },
+                    selectedId = selected,
+                    features = { it.features.orEmpty() },
+                )
                 chosen.forEachIndexed { index, voice ->
                     val locale = voice.locale
                     val country = locale.getDisplayCountry(Locale.US).ifBlank { "International" }
                     val language = locale.getDisplayLanguage(Locale.US)
                     val source = if (voice.isNetworkConnectionRequired) "online" else "device"
-                    val gender = VoiceShortlist.gender(voice.name)
+                    val gender = VoiceShortlist.gender(voice.name, voice.features.orEmpty())
                     add(VoiceOption(voice.name, "$gender ${index + 1} · $source", "$language · $country"))
                 }
             }
