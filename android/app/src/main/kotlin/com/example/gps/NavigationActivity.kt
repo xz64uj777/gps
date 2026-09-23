@@ -1342,31 +1342,57 @@ private fun DestinationArrivalCard(route: OpenRouteClient.RouteSummary) {
     var status by remember(destinationKey) { mutableStateOf("Destination photo") }
     var attempted by remember(destinationKey) { mutableStateOf(false) }
 
-    LaunchedEffect(destinationKey) {
+    LaunchedEffect(destinationKey, route.arrived) {
         val key = settings.key()
-        if (!settings.enabled() || key.isBlank()) {
-            NavigationTelemetryRuntime.streetView("DISABLED_OR_NO_KEY")
-            return@LaunchedEffect
-        }
-        if (attempted) return@LaunchedEffect
-        attempted = true
-        status = "Loading destination photo…"
-        NavigationTelemetryRuntime.streetView("LOADING")
-        when (val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            client.load(key, route.destinationLat, route.destinationLon)
-        }) {
-            is com.example.gps.streetview.StreetViewStaticClient.Result.Success -> {
-                preview = result.preview
-                status = result.preview.copyright
-                NavigationTelemetryRuntime.streetView("PHOTO_SHOWN")
+        when (DestinationStreetView.deliveryMode(settings.enabled(), key.isNotBlank(), route.arrived)) {
+            DestinationStreetView.DeliveryMode.DISABLED -> {
+                NavigationTelemetryRuntime.streetView("DISABLED")
             }
-            com.example.gps.streetview.StreetViewStaticClient.Result.NoImagery -> {
-                status = "No Street View image near destination"
-                NavigationTelemetryRuntime.streetView("NO_IMAGERY")
+            DestinationStreetView.DeliveryMode.WAIT_FOR_ARRIVAL -> {
+                status = "Street View will open automatically at arrival"
+                NavigationTelemetryRuntime.streetView("KEYLESS_WAITING_FOR_ARRIVAL")
             }
-            is com.example.gps.streetview.StreetViewStaticClient.Result.Error -> {
-                status = result.message
-                NavigationTelemetryRuntime.streetView("ERROR:" + result.message)
+            DestinationStreetView.DeliveryMode.OPEN_EXTERNAL -> {
+                if (settings.shouldAutoOpenRoute(route.routeStartedAtMillis)) {
+                    settings.markAutoOpenedRoute(route.routeStartedAtMillis)
+                    val opened = runCatching {
+                        context.startActivity(
+                            Intent(
+                                Intent.ACTION_VIEW,
+                                android.net.Uri.parse(
+                                    DestinationStreetView.url(route.destinationLat, route.destinationLon)
+                                )
+                            )
+                        )
+                    }.isSuccess
+                    status = if (opened) "Street View opened" else "Could not open Street View"
+                    NavigationTelemetryRuntime.streetView(
+                        if (opened) "KEYLESS_AUTO_OPENED" else "KEYLESS_AUTO_OPEN_ERROR"
+                    )
+                }
+            }
+            DestinationStreetView.DeliveryMode.INLINE_PHOTO -> {
+                if (attempted) return@LaunchedEffect
+                attempted = true
+                status = "Loading destination photo…"
+                NavigationTelemetryRuntime.streetView("LOADING")
+                when (val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    client.load(key, route.destinationLat, route.destinationLon)
+                }) {
+                    is com.example.gps.streetview.StreetViewStaticClient.Result.Success -> {
+                        preview = result.preview
+                        status = result.preview.copyright
+                        NavigationTelemetryRuntime.streetView("PHOTO_SHOWN")
+                    }
+                    com.example.gps.streetview.StreetViewStaticClient.Result.NoImagery -> {
+                        status = "No Street View image near destination"
+                        NavigationTelemetryRuntime.streetView("NO_IMAGERY")
+                    }
+                    is com.example.gps.streetview.StreetViewStaticClient.Result.Error -> {
+                        status = result.message
+                        NavigationTelemetryRuntime.streetView("ERROR:" + result.message)
+                    }
+                }
             }
         }
     }
@@ -1404,7 +1430,8 @@ private fun DestinationArrivalCard(route: OpenRouteClient.RouteSummary) {
             Text(
                 when {
                     preview != null -> status
-                    !settings.enabled() || settings.key().isBlank() -> "Destination photo is off · enable it in Options"
+                    !settings.enabled() -> "Destination Street View is off · enable it in Options"
+                    settings.key().isBlank() && !route.arrived -> "No API key · Street View will open automatically at arrival"
                     else -> status
                 },
                 color = NavMuted,
@@ -2652,9 +2679,9 @@ private fun StreetViewOptions() {
         Modifier.fillMaxWidth().padding(vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text("Destination photo", color = NavText, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Text("Destination Street View", color = NavText, fontSize = 20.sp, fontWeight = FontWeight.Bold)
         Text(
-            "Shows one Google Street View still image when you get within about 800 ft of the destination. No interactive panorama is loaded.",
+            "With a Google Static Street View key, LaneGPS shows one in-app photo within about 800 ft. Without a key, it automatically opens Google Maps Street View once you arrive.",
             color = NavMuted,
             fontSize = 13.sp,
         )
@@ -2668,33 +2695,32 @@ private fun StreetViewOptions() {
         )
         Row(verticalAlignment = Alignment.CenterVertically) {
             Switch(checked = enabled, onCheckedChange = { enabled = it })
-            Text("Show destination photo", color = NavText, modifier = Modifier.padding(start = 8.dp))
+            Text("Use destination Street View", color = NavText, modifier = Modifier.padding(start = 8.dp))
         }
         Button(onClick = {
-            if (enabled && key.isBlank()) {
-                message = "Enter your Google Street View Static API key first."
-            } else {
-                settings.save(key, enabled)
-                message = if (enabled) {
-                    "Saved. LaneGPS will load one photo near arrival when Street View is available."
-                } else {
-                    "Destination photo disabled."
-                }
+            settings.save(key, enabled)
+            message = when {
+                !enabled -> "Destination Street View disabled."
+                key.isNotBlank() -> "Saved. LaneGPS will show one in-app photo near arrival when imagery is available."
+                else -> "Saved. No API key needed: Google Maps Street View will open automatically when you arrive."
             }
-        }) { Text("SAVE DESTINATION PHOTO") }
+        }) { Text("SAVE STREET VIEW SETTINGS") }
 
         TextButton(onClick = {
             key = ""
-            enabled = false
-            settings.save("", false)
-            message = "Key removed."
-        }) { Text("REMOVE KEY") }
+            settings.save("", enabled)
+            message = if (enabled) {
+                "API key removed. Keyless auto-open at arrival remains enabled."
+            } else {
+                "API key removed."
+            }
+        }) { Text("REMOVE API KEY") }
 
         if (message.isNotBlank()) {
             Text(message, color = NavBlueSoft, fontSize = 13.sp)
         }
         Text(
-            "The key stays on this phone. LaneGPS checks Street View metadata first and only requests the image when imagery is available.",
+            "The optional API key stays on this phone. Keyless arrival mode uses a normal Google Maps Street View link and does not require an API key.",
             color = NavMuted,
             fontSize = 12.sp,
         )
