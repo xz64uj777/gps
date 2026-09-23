@@ -22,7 +22,14 @@ class StreetViewSettings(context: Context) {
 
     fun save(key: String, enabled: Boolean) {
         if (key.isBlank()) file.delete() else file.writeText(key.trim())
-        prefs.edit().putBoolean("enabled", enabled && key.isNotBlank()).apply()
+        prefs.edit().putBoolean("enabled", enabled).apply()
+    }
+
+    fun shouldAutoOpenRoute(routeStartedAtMillis: Long): Boolean =
+        prefs.getLong("last_auto_open_route", Long.MIN_VALUE) != routeStartedAtMillis
+
+    fun markAutoOpenedRoute(routeStartedAtMillis: Long) {
+        prefs.edit().putLong("last_auto_open_route", routeStartedAtMillis).apply()
     }
 }
 
