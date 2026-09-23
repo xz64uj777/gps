@@ -1057,15 +1057,6 @@ private fun NavigationScreen(
     }
     val approachLanes = if (approachingManeuver && maneuverKey != null) route?.nextLanes.orEmpty() else emptyList()
     val hasRouteLanes = approachLanes.isNotEmpty()
-    val lanePanelStatus = when {
-        maneuverKey == null -> "INACTIVE"
-        !approachingManeuver -> "BEFORE_APPROACH"
-        !hasRouteLanes -> "NO_ROUTE_LANE_DATA"
-        else -> "SHOWING_ROUTE_LANES"
-    }
-    LaunchedEffect(lanePanelStatus, maneuverKey) {
-        NavigationTelemetryRuntime.lanePanel(lanePanelStatus)
-    }
     DisposableEffect(Unit) {
         onDispose { NavigationTelemetryRuntime.lanePanel("SCREEN_CLOSED") }
     }
@@ -1161,6 +1152,17 @@ private fun NavigationScreen(
             val actionableRouteLanes = hasRouteLanes &&
                 RouteLaneGuidance.actionable(approachLanes, route?.nextManeuver)
             val showLanePanel = !foldedCompact || actionableRouteLanes
+            val actualLanePanelStatus = when {
+                maneuverKey == null -> "INACTIVE"
+                !approachingManeuver -> "BEFORE_APPROACH"
+                !hasRouteLanes -> "HIDDEN_NO_ROUTE_LANE_DATA"
+                foldedCompact && !actionableRouteLanes -> "HIDDEN_NONACTIONABLE"
+                foldedCompact -> "SHOWING_ACTIONABLE_LANES"
+                else -> "SHOWING_ROUTE_LANES"
+            }
+            LaunchedEffect(actualLanePanelStatus, maneuverKey, foldedCompact) {
+                NavigationTelemetryRuntime.lanePanel(actualLanePanelStatus)
+            }
             if (showLanePanel) {
                 CompactLaneOverlay(
                     state = state,
