@@ -33,4 +33,18 @@ class VoiceShortlistTest {
         assertEquals(8, result.size)
         assertTrue("opaque-saved" in result)
     }
+    @Test fun knownGoogleEnglishVoiceIdsGetGenderLabels() {
+        assertEquals("Male", VoiceShortlist.gender("en-us-x-iol-local"))
+        assertEquals("Male", VoiceShortlist.gender("en-us-x-iom-network"))
+        assertEquals("Female", VoiceShortlist.gender("en-us-x-iog-local"))
+        assertEquals("Female", VoiceShortlist.gender("en-gb-x-gba-network"))
+        assertEquals("Male", VoiceShortlist.gender("en-gb-x-gbd-local"))
+        assertEquals("Male", VoiceShortlist.gender("en-au-x-aub-local"))
+    }
+
+    @Test fun explicitEngineGenderTokenOverridesOpaqueFamilyMapping() {
+        assertEquals("Male", VoiceShortlist.gender("en-us-x-sfg#male_1-local"))
+        assertEquals("Female", VoiceShortlist.gender("en-us-x-iol#female_2-local"))
+    }
+
 }
