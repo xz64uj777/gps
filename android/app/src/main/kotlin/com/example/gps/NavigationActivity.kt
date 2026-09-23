@@ -159,6 +159,10 @@ class NavigationActivity : ComponentActivity() {
     private var followAnimator: ValueAnimator? = null
     private var renderedPosition: LatLng? = null
     private var mapResumed = false
+    private var activityResumed = false
+    private val streetViewSettings by lazy {
+        com.example.gps.streetview.StreetViewSettings(applicationContext)
+    }
     private var followingLocation by mutableStateOf(true)
 
     private var uiState by mutableStateOf(GnssUiState())
@@ -191,6 +195,7 @@ class NavigationActivity : ComponentActivity() {
             }
 
             updateLiveRouteFromFix(state)
+            maybeOpenKeylessStreetView(routeUi.summary)
             updateMapFromState(state, routeUi.summary)
         }
     }
@@ -347,13 +352,16 @@ class NavigationActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        activityResumed = true
         mapView.onResume()
         trafficOverlay.resume()
         mapResumed = true
+        maybeOpenKeylessStreetView(routeUi.summary)
         updateMapFromState(uiState, routeUi.summary, forceCamera = true)
     }
 
     override fun onPause() {
+        activityResumed = false
         mapResumed = false
         followAnimator?.cancel()
         trafficOverlay.pause()
@@ -543,6 +551,33 @@ class NavigationActivity : ComponentActivity() {
                 logRouteEvent(if (result.isSuccess) "ROUTE_REROUTED" else "ROUTE_REROUTE_FAILED")
                 updateMapFromState(uiState, routeUi.summary, forceCamera = true)
             }
+        }
+    }
+
+    private fun maybeOpenKeylessStreetView(route: OpenRouteClient.RouteSummary?) {
+        if (route == null || !route.arrived) return
+        if (!streetViewSettings.enabled() || streetViewSettings.key().isNotBlank()) return
+        if (!streetViewSettings.shouldAutoOpenRoute(route.routeStartedAtMillis)) return
+        if (!activityResumed) {
+            NavigationTelemetryRuntime.streetView("KEYLESS_WAITING_FOR_FOREGROUND")
+            return
+        }
+
+        val opened = runCatching {
+            startActivity(
+                Intent(
+                    Intent.ACTION_VIEW,
+                    android.net.Uri.parse(
+                        DestinationStreetView.url(route.destinationLat, route.destinationLon)
+                    )
+                )
+            )
+        }.isSuccess
+        if (opened) {
+            streetViewSettings.markAutoOpenedRoute(route.routeStartedAtMillis)
+            NavigationTelemetryRuntime.streetView("KEYLESS_AUTO_OPENED")
+        } else {
+            NavigationTelemetryRuntime.streetView("KEYLESS_AUTO_OPEN_ERROR")
         }
     }
 
