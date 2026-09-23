@@ -226,7 +226,7 @@ class NavigationVoiceController(
                     val language = locale.getDisplayLanguage(Locale.US)
                     val source = if (voice.isNetworkConnectionRequired) "online" else "device"
                     val gender = VoiceShortlist.gender(voice.name, voice.features.orEmpty())
-                    add(VoiceOption(voice.name, "$gender ${index + 1} · $source", "$language · $country"))
+                    add(VoiceOption(voice.name, "$gender · Voice ${index + 1} · $source", "$language · $country"))
                 }
             }
         }
