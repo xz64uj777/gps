@@ -171,6 +171,15 @@ class NavigationActivity : ComponentActivity() {
     private var autoRecordingForRoute = false
     private var routeQuery by mutableStateOf("")
     private var routeUi by mutableStateOf(NavigationRouteUi())
+    private lateinit var voiceController: NavigationVoiceController
+    private var voiceState by mutableStateOf(
+        NavigationVoiceController.State(
+            ready = false,
+            muted = false,
+            voices = emptyList(),
+            selectedVoiceId = NavigationVoiceController.DEFAULT_VOICE_ID,
+        )
+    )
 
     private var pendingStart = false
     private var liveViewStoppedByUser = false
@@ -179,7 +188,6 @@ class NavigationActivity : ComponentActivity() {
     private var lastProgressFixTimestamp: Long? = null
     private var offRouteFixStreak = 0
     private var lastRerouteElapsed = 0L
-    private var rerouteAnnouncementSerial by mutableIntStateOf(0)
 
     private val runtimeListener: (GnssUiState) -> Unit = { state ->
         runOnUiThread {
@@ -218,6 +226,9 @@ class NavigationActivity : ComponentActivity() {
         appearanceSettings = NavigationAppearanceSettings(this)
         lightMode = appearanceSettings.lightMode()
         applyNavigationPalette(lightMode)
+        voiceController = NavigationVoiceController(applicationContext) { state ->
+            runOnUiThread { voiceState = state }
+        }
         uiState = DriveSessionRuntime.latest() ?: store.load()
         sessionActive = store.isActive()
         recordingActive = store.isRecording()
@@ -324,7 +335,8 @@ class NavigationActivity : ComponentActivity() {
                         applyNavigationPalette(useLight)
                         lightMode = useLight
                     },
-                    rerouteAnnouncementSerial = rerouteAnnouncementSerial,
+                    voiceController = voiceController,
+                    voiceState = voiceState,
                 )
             }
         }
@@ -416,6 +428,7 @@ class NavigationActivity : ComponentActivity() {
         DriveSessionRuntime.removeListener(runtimeListener)
         routeExecutor.shutdownNow()
         trafficOverlay.destroy()
+        voiceController.shutdown()
         mapView.onDestroy()
         super.onDestroy()
     }
@@ -518,7 +531,7 @@ class NavigationActivity : ComponentActivity() {
 
     private fun reroute(previous: OpenRouteClient.RouteSummary, lat: Double, lon: Double) {
         if (routeUi.rerouting) return
-        rerouteAnnouncementSerial++
+        voiceController.announceRerouting()
         routeUi = routeUi.copy(rerouting = true, error = null)
         val generation = ++routeGeneration
         // Capture GNSS course with the request origin; never read mutable UI state
@@ -997,35 +1010,12 @@ private fun NavigationScreen(
     onOpenDiagnostics: () -> Unit,
     lightMode: Boolean,
     onAppearanceChanged: (Boolean) -> Unit,
-    rerouteAnnouncementSerial: Int,
+    voiceController: NavigationVoiceController,
+    voiceState: NavigationVoiceController.State,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var showOptions by rememberSaveable { mutableStateOf(false) }
     var editingDestination by remember { mutableStateOf(false) }
-    val mainHandler = remember { Handler(Looper.getMainLooper()) }
-    var voiceState by remember {
-        mutableStateOf(
-            NavigationVoiceController.State(
-                ready = false,
-                muted = false,
-                voices = emptyList(),
-                selectedVoiceId = NavigationVoiceController.DEFAULT_VOICE_ID,
-            )
-        )
-    }
-    val voiceController = remember {
-        NavigationVoiceController(context.applicationContext) { state ->
-            mainHandler.post { voiceState = state }
-        }
-    }
-
-    DisposableEffect(voiceController) {
-        onDispose { voiceController.shutdown() }
-    }
-
-    LaunchedEffect(Unit) {
-        voiceState = voiceController.state()
-    }
 
     var announcedRoute by remember { mutableStateOf<Long?>(null) }
     LaunchedEffect(
@@ -1050,10 +1040,6 @@ private fun NavigationScreen(
                 announcedRoute = route.routeStartedAtMillis
             } else voiceController.onProgress(route, (state.speedMps ?: 0f).toDouble())
         }
-    }
-
-    LaunchedEffect(rerouteAnnouncementSerial) {
-        if (rerouteAnnouncementSerial > 0) voiceController.announceRerouting()
     }
 
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
