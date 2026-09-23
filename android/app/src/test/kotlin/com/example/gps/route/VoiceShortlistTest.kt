@@ -22,8 +22,8 @@ class VoiceShortlistTest {
         )
     }
 
-    @Test fun opaqueEngineIdsAreExplicitlyUnknownAndBounded() {
-        assertEquals("Unknown", VoiceShortlist.gender("en-us-x-iom-local"))
+    @Test fun opaqueUnknownEngineIdsRemainUnknownAndBounded() {
+        assertEquals("Unknown", VoiceShortlist.gender("vendor-opaque-voice"))
         assertEquals(8, VoiceShortlist.select((1..30).map { "opaque-$it" }, { it }, null).size)
     }
 
