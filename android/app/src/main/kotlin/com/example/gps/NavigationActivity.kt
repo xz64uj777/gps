@@ -2625,6 +2625,8 @@ private fun VoiceOptions(voiceController: NavigationVoiceController, voiceState:
 
             Text("Alerts only: rerouting and arrival. No turn-by-turn speech.",
                 color = NavMuted, fontSize = 12.sp)
+            Text("Voice labels show Male/Female only when the installed TTS engine reports it; otherwise LaneGPS shows Unknown instead of guessing.",
+                color = NavMuted, fontSize = 11.sp)
             Spacer(Modifier.height(7.dp))
 
     }
