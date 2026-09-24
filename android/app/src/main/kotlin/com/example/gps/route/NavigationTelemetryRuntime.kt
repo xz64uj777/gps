@@ -23,6 +23,7 @@ object NavigationTelemetryRuntime {
         val rerouteCount: Int = 0,
         val updatedAtMillis: Long = 0L,
         val routeLaneCount: Int = 0,
+        val routeGeometry: List<OpenRouteClient.RoutePoint> = emptyList(),
         val routeLaneChoices: String = "",
         val routeLaneIndications: String = "",
     )
@@ -63,6 +64,7 @@ object NavigationTelemetryRuntime {
             nextManeuver = route.nextManeuver,
             nextRoad = route.nextRoad,
             routeLaneCount = route.nextLanes.size,
+            routeGeometry = route.geometry,
             routeLaneChoices = route.nextLanes.mapIndexedNotNull { i, lane -> (i + 1).takeIf { lane.valid } }.joinToString("|"),
             routeLaneIndications = RouteLaneGuidance.hints(route.nextLanes).joinToString("|"),
             nextManeuverDistanceMeters = route.nextManeuverDistanceMeters,

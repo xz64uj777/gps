@@ -15,6 +15,7 @@ internal object DriveLogExport {
         val fixStaleIndex = index("fix_stale")
         val navEventIndex = index("nav_event")
         val navUpdatedIndex = index("nav_updated_at_ms")
+        val routeGeometryIndex = index("nav_route_geometry_lat_lon")
 
         // A malformed or old header should never make export destructive.
         if (listOf(accuracyIndex, speedIndex, recordedAtIndex, fixAgeIndex, fixStaleIndex).any { it < 0 }) {
@@ -47,7 +48,8 @@ internal object DriveLogExport {
             val key = event to fields.getOrNull(navUpdatedIndex).orEmpty()
             val newLifecycle = lifecycle && key != previousLifecycle
             previousLifecycle = key
-            recordedAt == null || recordedAt <= cutoff || newLifecycle
+            recordedAt == null || recordedAt <= cutoff || newLifecycle ||
+                !fields.getOrNull(routeGeometryIndex).isNullOrBlank()
         }
     }
 

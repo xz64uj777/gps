@@ -18,6 +18,7 @@ class DriveTelemetryRecorder(context: Context) {
     private val appVersionName: String
     private val appVersionCode: Long
     private var lastRecordedLaneChangeSequence = 0L
+    private val routeTrace = com.example.gps.route.RouteTraceEncoder()
 
     init {
         val info = appContext.packageManager.getPackageInfo(appContext.packageName, 0)
@@ -34,6 +35,7 @@ class DriveTelemetryRecorder(context: Context) {
         NavigationTelemetryRuntime.lifecycle("DRIVE_STARTED")
         NavigationVoiceTelemetryRuntime.resetForDrive()
         lastRecordedLaneChangeSequence = 0L
+        routeTrace.reset()
         logFile.writeText(HEADER + "\n")
     }
 
@@ -109,6 +111,7 @@ class DriveTelemetryRecorder(context: Context) {
         val fixStale = fixAgeMillis != null && fixAgeMillis > STALE_FIX_MS
         val nav = NavigationTelemetryRuntime.snapshot()
         val voice = NavigationVoiceTelemetryRuntime.snapshot()
+        val trace = routeTrace.next(nav.routeGeometry)
 
         val newLaneChangeEvent =
             state.laneChangeEventSequence > lastRecordedLaneChangeSequence &&
@@ -197,6 +200,8 @@ class DriveTelemetryRecorder(context: Context) {
             csv(nav.routeLaneIndications),
             csv(NavigationTelemetryRuntime.lanePanelStatus()),
             csv(NavigationTelemetryRuntime.streetViewStatus()),
+            csv(trace.routeId),
+            csv(trace.geometry),
         ).joinToString(",")
     }
 
@@ -223,6 +228,6 @@ class DriveTelemetryRecorder(context: Context) {
                 "voice_last_utterance,voice_last_result,voice_last_attempt_ms,voice_updated_at_ms," +
                 "motion_event,motion_event_sequence,lane_change_event,lane_change_event_sequence," +
                 "session_left_lateral_events,session_right_lateral_events,session_turn_events,session_rejected_motion_spikes," +
-                "lane_change_new,lane_change_map_eligible,lane_change_rejection,app_version_name,app_version_code,nav_lane_count,nav_lane_choices,nav_lane_indications,lane_panel_status,street_view_status"
+                "lane_change_new,lane_change_map_eligible,lane_change_rejection,app_version_name,app_version_code,nav_lane_count,nav_lane_choices,nav_lane_indications,lane_panel_status,street_view_status,nav_route_id,nav_route_geometry_lat_lon"
     }
 }

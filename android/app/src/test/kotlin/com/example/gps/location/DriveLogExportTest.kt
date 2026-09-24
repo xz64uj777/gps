@@ -106,4 +106,15 @@ class DriveLogExportTest {
             DriveLogExport.trim(listOf(shiftedHeaderLine, moving, staleTail))
         )
     }
+    @Test fun routePayloadSurvivesParkedTailTrimming() {
+        val extendedHeader = header + ",nav_route_id,nav_route_geometry_lat_lon"
+        val moving = row(1_000, speed = 10.0, event = "PROGRESS") + ",route-a,1.0:2.0|1.001:2.002"
+        val routeChange = row(200_000, event = "PROGRESS") + ",route-b,1.0:2.0|1.002:2.002"
+        val repeated = row(201_000, event = "PROGRESS") + ",route-b,"
+        assertEquals(
+            listOf(extendedHeader, moving, routeChange),
+            DriveLogExport.trim(listOf(extendedHeader, moving, routeChange, repeated)),
+        )
+    }
+
 }
