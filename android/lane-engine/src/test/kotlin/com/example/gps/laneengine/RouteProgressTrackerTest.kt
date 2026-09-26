@@ -80,6 +80,36 @@ class RouteProgressTrackerTest {
         assertTrue(result.crossTrackMeters > 80.0)
     }
 
+    @Test fun startRecoveryFindsCarBeyondInitialCorridor() {
+        val route = (0..250).map { eastPoint(it * 20.0) }
+        val old = tracker.match(eastPoint(3_000.0), route)
+        val recovered = tracker.match(eastPoint(3_000.0), route, allowStartRecovery = true)
+        assertTrue(old.crossTrackMeters > 1_000.0)
+        assertTrue(recovered.crossTrackMeters < 2.0)
+        assertEquals(150, recovered.routeIndex)
+    }
+
+    @Test fun startRecoveryRejectsParallelOrDistantRoad() {
+        val route = (0..250).map { eastPoint(it * 20.0) }
+        val result = tracker.match(northOffset(eastPoint(3_000.0), 40.0), route,
+            allowStartRecovery = true)
+        assertTrue(result.crossTrackMeters > 1_000.0)
+    }
+
+    @Test fun startRecoveryRejectsTwoDifferentNearbyRoutePasses() {
+        val route = (0..250).map { eastPoint(it * 20.0) } +
+            (250 downTo 0).map { northOffset(eastPoint(it * 20.0), 8.0) }
+        val result = tracker.match(eastPoint(3_000.0), route, allowStartRecovery = true)
+        assertTrue(result.crossTrackMeters > 1_000.0)
+    }
+
+    @Test fun establishedProgressDoesNotJumpOutsideCorridor() {
+        val route = (0..250).map { eastPoint(it * 20.0) }
+        val result = tracker.match(eastPoint(3_000.0), route, previousIndex = 5,
+            allowStartRecovery = true)
+        assertTrue(result.crossTrackMeters > 1_000.0)
+    }
+
     private fun eastPoint(eastMeters: Double): GeoPoint {
         val lonOffset = eastMeters / (111_320.0 * cos(origin.lat * Math.PI / 180.0))
         return GeoPoint(origin.lat, origin.lon + lonOffset)

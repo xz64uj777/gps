@@ -27,6 +27,7 @@ class RouteProgressTracker {
         previousIndex: Int = 0,
         forwardHorizonMeters: Double = DEFAULT_FORWARD_HORIZON_M,
         backwardPoints: Int = DEFAULT_BACKWARD_POINTS,
+        allowStartRecovery: Boolean = false,
     ): Match {
         if (geometry.isEmpty()) {
             return Match(
@@ -69,6 +70,29 @@ class RouteProgressTracker {
                 bestFraction = projection.t
                 bestProjectedPoint = projection.projectedPoint
             }
+        }
+
+        // A restored or delayed route can still be at index zero after the car
+        // has passed the local search corridor. Recover only an unambiguous,
+        // close match; ordinary progress retains its local anti-loop behavior.
+        if (allowStartRecovery && previous == 0 && bestDistance > 75.0) {
+            val candidates = mutableListOf<Pair<Match, Double>>()
+            var along = 0.0
+            for (i in 0 until geometry.lastIndex) {
+                val projection = project(position, geometry[i], geometry[i + 1])
+                val length = distanceMeters(geometry[i], geometry[i + 1])
+                if (projection.distanceMeters <= 25.0) {
+                    candidates += Match(
+                        if (projection.t >= 0.5) i + 1 else i,
+                        projection.distanceMeters, i, projection.t, projection.projectedPoint,
+                    ) to (along + length * projection.t)
+                }
+                along += length
+            }
+            val closest = candidates.minByOrNull { it.first.crossTrackMeters }
+            if (closest != null && candidates.none {
+                    kotlin.math.abs(it.second - closest.second) > 100.0
+                }) return closest.first
         }
 
         return Match(

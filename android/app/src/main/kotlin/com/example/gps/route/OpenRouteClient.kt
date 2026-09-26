@@ -127,6 +127,7 @@ class OpenRouteClient {
             position = GeoPoint(currentLat, currentLon),
             geometry = geometryPoints,
             previousIndex = route.progressIndex,
+            allowStartRecovery = route.progressIndex == 0,
         )
         val nearestIndex = progress.routeIndex
         val segmentIndex = progress.segmentIndex.coerceIn(0, route.geometry.lastIndex - 1)
