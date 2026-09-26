@@ -39,6 +39,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -219,6 +222,9 @@ class NavigationActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Applies only while this navigation window is visible, including address entry.
+        // Android allows normal screen timeout once the user leaves this activity.
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         enableEdgeToEdge()
         followingLocation = savedInstanceState?.getBoolean("following_location", true) ?: true
         liveViewStoppedByUser = savedInstanceState?.getBoolean("live_view_stopped", false) ?: false
@@ -2200,8 +2206,8 @@ private fun DestinationCard(
     var recent by remember { mutableStateOf(store.recent()) }
     var home by remember { mutableStateOf(store.home()) }
     var work by remember { mutableStateOf(store.work()) }
-    var remoteSuggestions by remember { mutableStateOf<List<PhotonSearchClient.Suggestion>>(emptyList()) }
-    var searching by remember { mutableStateOf(false) }
+    var remoteSuggestions by remember(query) { mutableStateOf<List<PhotonSearchClient.Suggestion>>(emptyList()) }
+    var searching by remember(query) { mutableStateOf(false) }
     var queryFocused by remember { mutableStateOf(false) }
 
     val dismissSearch: () -> Unit = {
@@ -2211,6 +2217,12 @@ private fun DestinationCard(
         onEditingChanged(false)
     }
     BackHandler(enabled = queryFocused, onBack = dismissSearch)
+    val submitSearch: () -> Unit = {
+        if (query.isNotBlank() && !routeUi.planning) {
+            dismissSearch()
+            onPrimaryAction()
+        }
+    }
 
     LaunchedEffect(routeUi.summary?.destinationName) {
         val destination = routeUi.summary?.destinationName?.trim().orEmpty()
@@ -2227,11 +2239,15 @@ private fun DestinationCard(
         if (clean.length < 3) return@LaunchedEffect
         kotlinx.coroutines.delay(450L)
         searching = true
-        remoteSuggestions = runCatching {
+        remoteSuggestions = try {
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 photon.search(clean, limit = 5)
             }
-        }.getOrDefault(emptyList())
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            emptyList()
+        }
         searching = false
     }
 
@@ -2265,6 +2281,8 @@ private fun DestinationCard(
                                 .weight(1f)
                                 .onFocusChanged { queryFocused = it.isFocused; onEditingChanged(it.isFocused) },
                             singleLine = true,
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                            keyboardActions = KeyboardActions(onGo = { submitSearch() }),
                             enabled = !routeUi.planning,
                             textStyle = LocalTextStyle.current.copy(color = NavText, fontSize = 13.sp),
                             cursorBrush = SolidColor(NavBlueSoft),
@@ -2278,7 +2296,7 @@ private fun DestinationCard(
                             },
                         )
                         TextButton(
-                            onClick = { focusManager.clearFocus(); onPrimaryAction() },
+                            onClick = submitSearch,
                             enabled = query.isNotBlank() && !routeUi.planning,
                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                         ) {
@@ -2294,19 +2312,28 @@ private fun DestinationCard(
                         .fillMaxWidth()
                         .onFocusChanged { queryFocused = it.isFocused; onEditingChanged(it.isFocused) },
                     singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                    keyboardActions = KeyboardActions(onGo = { submitSearch() }),
                     placeholder = { Text("Address, place or business") },
-                    trailingIcon = { TextButton(onClick = { focusManager.clearFocus(); onPrimaryAction() },
+                    trailingIcon = { TextButton(onClick = submitSearch,
                         enabled = query.isNotBlank() && !routeUi.planning) { Text(if (routeUi.planning) "…" else "GO") } },
                     enabled = !routeUi.planning,
                 )
             }
 
             if (queryFocused) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            TextButton(
+                onClick = { onQueryChange("") },
+                enabled = query.isNotEmpty() && !routeUi.planning,
+            ) {
+                Text("CLEAR")
+            }
             TextButton(
                 onClick = dismissSearch,
-                modifier = Modifier.align(Alignment.End),
             ) {
                 Text("CANCEL SEARCH", color = NavBlueSoft)
+            }
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                 OutlinedButton(
