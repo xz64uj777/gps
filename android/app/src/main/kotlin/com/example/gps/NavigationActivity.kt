@@ -30,6 +30,7 @@ import com.example.gps.route.ActiveNavigationStore
 import com.example.gps.route.NavigationTelemetryRuntime
 import com.example.gps.location.DriveTelemetryRecorder
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -49,6 +50,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -2191,6 +2193,7 @@ private fun DestinationCard(
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     val store = remember { DestinationStore(context.applicationContext) }
     val photon = remember { PhotonSearchClient() }
     var saved by remember { mutableStateOf(store.saved()) }
@@ -2200,6 +2203,14 @@ private fun DestinationCard(
     var remoteSuggestions by remember { mutableStateOf<List<PhotonSearchClient.Suggestion>>(emptyList()) }
     var searching by remember { mutableStateOf(false) }
     var queryFocused by remember { mutableStateOf(false) }
+
+    val dismissSearch: () -> Unit = {
+        keyboardController?.hide()
+        focusManager.clearFocus(force = true)
+        queryFocused = false
+        onEditingChanged(false)
+    }
+    BackHandler(enabled = queryFocused, onBack = dismissSearch)
 
     LaunchedEffect(routeUi.summary?.destinationName) {
         val destination = routeUi.summary?.destinationName?.trim().orEmpty()
@@ -2291,6 +2302,12 @@ private fun DestinationCard(
             }
 
             if (queryFocused) {
+            TextButton(
+                onClick = dismissSearch,
+                modifier = Modifier.align(Alignment.End),
+            ) {
+                Text("CANCEL SEARCH", color = NavBlueSoft)
+            }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                 OutlinedButton(
                     onClick = {
