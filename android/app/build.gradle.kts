@@ -12,8 +12,12 @@ android {
         targetSdk = 37
         versionCode = System.getenv("LANE_GPS_VERSION_CODE")?.toIntOrNull() ?: 1
         versionName = System.getenv("LANE_GPS_VERSION_NAME") ?: "0.1.0"
+        manifestPlaceholders["MAPS_API_KEY"] = System.getenv("GOOGLE_MAPS_API_KEY") ?: ""
     }
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
 }
 
 dependencies {
@@ -31,5 +35,6 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.ui:ui-viewbinding")
     implementation("org.maplibre.gl:android-sdk-opengl:13.6.0")
+    implementation("com.google.android.gms:play-services-maps:20.0.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
