@@ -16,6 +16,7 @@ jobs:
     env:
       LANE_GPS_VERSION_CODE: ${{ github.run_number }}
       LANE_GPS_VERSION_NAME: 0.1.${{ github.run_number }}
+      GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
 
     steps:
       - name: Checkout repository
