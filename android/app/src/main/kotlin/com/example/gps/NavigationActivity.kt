@@ -154,8 +154,7 @@ class NavigationActivity : ComponentActivity() {
     private val routeExecutor = Executors.newSingleThreadExecutor()
 
     private lateinit var mapView: MapView
-    private var trafficStatus by mutableStateOf("Traffic · setup in Options")
-    private val trafficOverlay by lazy { com.example.gps.traffic.TrafficOverlay(this) { trafficStatus = it } }
+    private var trafficStatus by mutableStateOf("Traffic · Google preview in Options")
     private var map: MapLibreMap? = null
     private var mapStyleReady = false
     private var lastMapFixTimestamp: Long? = null
@@ -276,7 +275,6 @@ class NavigationActivity : ComponentActivity() {
             readyMap.uiSettings.setLogoMargins((8 * density).toInt(), 0, 0, (220 * density).toInt())
             readyMap.setStyle(MAP_STYLE_URI) { style ->
                 installNavigationLayers(style)
-                trafficOverlay.attach(readyMap)
                 mapStyleReady = true
                 routeLayersInitialized = false
                 updateMapFromState(uiState, routeUi.summary, forceCamera = true)
@@ -374,7 +372,6 @@ class NavigationActivity : ComponentActivity() {
         super.onResume()
         activityResumed = true
         mapView.onResume()
-        trafficOverlay.resume()
         mapResumed = true
         maybeOpenKeylessStreetView(routeUi.summary)
         updateMapFromState(uiState, routeUi.summary, forceCamera = true)
@@ -384,7 +381,6 @@ class NavigationActivity : ComponentActivity() {
         activityResumed = false
         mapResumed = false
         followAnimator?.cancel()
-        trafficOverlay.pause()
         mapView.onPause()
         super.onPause()
     }
@@ -435,7 +431,6 @@ class NavigationActivity : ComponentActivity() {
         routeGeneration++
         DriveSessionRuntime.removeListener(runtimeListener)
         routeExecutor.shutdownNow()
-        trafficOverlay.destroy()
         voiceController.shutdown()
         mapView.onDestroy()
         super.onDestroy()
@@ -2700,34 +2695,39 @@ private fun VoiceOptions(voiceController: NavigationVoiceController, voiceState:
 @Composable
 private fun TrafficOptions(onChanged: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val settings = remember { com.example.gps.traffic.TrafficSettings(context.applicationContext) }
-    var key by remember { mutableStateOf(settings.key()) }
-    var enabled by remember { mutableStateOf(settings.enabled()) }
-    var message by remember { mutableStateOf("") }
-    Column(Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    val configured = remember { GoogleTrafficActivity.isConfigured(context) }
+
+    Column(
+        Modifier.fillMaxWidth().padding(vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
         Text("Live traffic", color = NavText, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-        Text("TomTom congestion overlay: green = flowing, yellow/orange = slower, red = heavy traffic. Coverage varies. Route times and rerouting still use the standard route service.", color = NavMuted, fontSize = 13.sp)
-        OutlinedTextField(value = key, onValueChange = { key = it; message = "" },
-            label = { Text("TomTom Traffic API key") }, singleLine = true,
-            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
-            modifier = Modifier.fillMaxWidth())
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Switch(checked = enabled, onCheckedChange = { enabled = it })
-            Text("Show traffic on the map", color = NavText, modifier = Modifier.padding(start = 8.dp))
-        }
-        Button(onClick = {
-            if (enabled && key.isBlank()) message = "Enter your TomTom Traffic key first."
-            else {
-                settings.save(key, enabled)
+        Text(
+            "LaneGPS is moving to Google Maps traffic. TomTom setup has been retired from the normal user flow.",
+            color = NavMuted,
+            fontSize = 13.sp,
+        )
+        Text(
+            if (configured) "Google Maps is configured for this build."
+            else "Google Maps key not configured in this build yet. The current driving map remains active until the Google cutover is ready.",
+            color = if (configured) NavGreen else NavAmber,
+            fontSize = 12.sp,
+        )
+        Button(
+            onClick = {
                 onChanged()
-                message = if (enabled) "Saved. Connection status appears on the map." else "Traffic disabled."
-            }
-        }) { Text("SAVE TRAFFIC SETTINGS") }
-        TextButton(onClick = {
-            key = ""; enabled = false; settings.save("", false); onChanged(); message = "Key removed."
-        }) { Text("REMOVE KEY") }
-        if (message.isNotBlank()) Text(message, color = NavBlueSoft, fontSize = 13.sp)
-        Text("Your key stays on this phone. Traffic refreshes every two minutes while this screen is active. Provider usage limits apply.", color = NavMuted, fontSize = 12.sp)
+                context.startActivity(Intent(context, GoogleTrafficActivity::class.java))
+            },
+            enabled = configured,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("OPEN GOOGLE TRAFFIC PREVIEW")
+        }
+        Text(
+            "The preview uses Google's built-in live traffic layer. Routing and LaneGPS lane logic are still unchanged during this migration stage.",
+            color = NavMuted,
+            fontSize = 12.sp,
+        )
     }
 }
 
