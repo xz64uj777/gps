@@ -297,7 +297,7 @@ class NavigationActivity : ComponentActivity() {
                     sessionActive = sessionActive,
                     recordingActive = recordingActive,
                     trafficStatus = trafficStatus,
-                    onTrafficChanged = { trafficOverlay.reload() },
+                    onTrafficChanged = {},
                     followingLocation = followingLocation,
                     onRecenter = {
                         followingLocation = true
