@@ -167,7 +167,7 @@ class NavigationActivity : ComponentActivity() {
     private var mapLibreView: MapView? = null
     private var googleMapView: GoogleMapView? = null
     private var useGoogleMap = false
-    private var trafficStatus by mutableStateOf("Traffic · Google key needed · fallback map")
+    private var trafficStatus by mutableStateOf("Map · fallback mode")
     private var map: MapLibreMap? = null
     private var googleMap: GoogleMap? = null
     private var googleRouteLine: Polyline? = null
@@ -452,7 +452,7 @@ class NavigationActivity : ComponentActivity() {
             readyMap.uiSettings.setLogoMargins((8 * density).toInt(), 0, 0, (220 * density).toInt())
             readyMap.setStyle(MAP_STYLE_URI) { style ->
                 installNavigationLayers(style)
-                trafficStatus = "Traffic · Google key needed · fallback map"
+                trafficStatus = "Map · fallback mode"
                 mapStyleReady = true
                 routeLayersInitialized = false
                 updateMapFromState(uiState, routeUi.summary, forceCamera = true)
@@ -970,7 +970,7 @@ class NavigationActivity : ComponentActivity() {
         // Interpolate observed fixes only: no invented future GPS or lane evidence.
         // Marker and camera share a frame clock, avoiding marker/camera disagreement.
         followAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = (gap * 0.75).toLong().coerceIn(150L, 650L)
+            duration = (gap * 0.92).toLong().coerceIn(250L, 950L)
             interpolator = LinearInterpolator()
             addUpdateListener { animation ->
                 val t = (animation.animatedValue as Float).toDouble()
@@ -1368,15 +1368,21 @@ private fun NavigationScreen(
                     routeUi.error?.let { Text(it, color = NavAmber, fontSize = 12.sp, maxLines = 2) }
                 }
             }
-            val actionableRouteLanes = hasRouteLanes &&
-                RouteLaneGuidance.actionable(approachLanes, route?.nextManeuver)
-            val showLanePanel = !foldedCompact || actionableRouteLanes
+            val compactLaneRelevant = shouldShowCompactLaneOverlay(
+                laneCount = displayLaneCount,
+                targetLanes = displayTargetLanes,
+                maneuver = route?.nextManeuver,
+                maneuverDistanceMeters = route?.nextManeuverDistanceMeters,
+                arrived = route?.arrived == true,
+            )
+            val showLanePanel = !foldedCompact || compactLaneRelevant
             val actualLanePanelStatus = when {
                 maneuverKey == null -> "INACTIVE"
                 !approachingManeuver -> "BEFORE_APPROACH"
+                foldedCompact && !compactLaneRelevant -> "HIDDEN_NONACTIONABLE"
+                foldedCompact && hasRouteLanes -> "SHOWING_ACTIONABLE_LANES"
+                foldedCompact -> "SHOWING_APPROACH_LANE_LAYOUT"
                 !hasRouteLanes -> "HIDDEN_NO_ROUTE_LANE_DATA"
-                foldedCompact && !actionableRouteLanes -> "HIDDEN_NONACTIONABLE"
-                foldedCompact -> "SHOWING_ACTIONABLE_LANES"
                 else -> "SHOWING_ROUTE_LANES"
             }
             LaunchedEffect(actualLanePanelStatus, maneuverKey, foldedCompact) {
@@ -1397,9 +1403,9 @@ private fun NavigationScreen(
                     recentConfirmedLane = if (hasRouteLanes) null else recentConfirmedLane,
                     recentConfirmedAgeMillis = lastConfirmedAgeMillis,
                     compact = foldedCompact,
-                    showDiagram = hasRouteLanes,
+                    showDiagram = hasRouteLanes || compactLaneRelevant,
                     routeApproach = hasRouteLanes,
-                    awaitingRouteLanes = false,
+                    awaitingRouteLanes = compactLaneRelevant && !hasRouteLanes,
                 )
             }
             route?.takeIf { !routeUi.rerouting && DestinationStreetView.nearArrival(it.distanceMeters) }?.let {
@@ -2423,7 +2429,7 @@ private fun DestinationCard(
         searching = false
         val clean = query.trim()
         if (clean.length < 3) return@LaunchedEffect
-        kotlinx.coroutines.delay(450L)
+        kotlinx.coroutines.delay(300L)
         searching = true
         remoteSuggestions = try {
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -2569,7 +2575,7 @@ private fun DestinationCard(
                 ) {
                     Column(
                         Modifier.fillMaxWidth()
-                            .heightIn(max = if (compact) 120.dp else 180.dp)
+                            .heightIn(max = if (compact) 220.dp else 260.dp)
                             .verticalScroll(rememberScrollState())
                             .padding(vertical = if (compact) 2.dp else 4.dp)
                     ) {
