@@ -1321,6 +1321,22 @@ private fun NavigationScreen(
         val wide = maxWidth >= 600.dp
         val foldedCompact = !wide
         AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize())
+        if (!followingLocation && !editingDestination) {
+            Button(
+                onClick = onRecenter,
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .windowInsetsPadding(
+                        WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.End)
+                    )
+                    .padding(end = 10.dp)
+                    .heightIn(min = 52.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = NavBlue, contentColor = Color.White),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+            ) {
+                Text("⌖ RECENTER", fontWeight = FontWeight.ExtraBold, fontSize = 13.sp)
+            }
+        }
         if (!editingDestination) {
         Column(
             Modifier.align(Alignment.TopStart).windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
@@ -1442,9 +1458,6 @@ private fun NavigationScreen(
                             modifier = Modifier.weight(1f), color = NavText, fontSize = 13.sp,
                             fontWeight = FontWeight.Bold,
                         )
-                        if (!followingLocation) {
-                            TextButton(onClick = onRecenter) { Text("Recenter", fontSize = 12.sp) }
-                        }
                         if (route != null || routeUi.planning || routeUi.waitingForGps) {
                             TextButton(onClick = onStopNavigation) { Text("End route", fontSize = 12.sp) }
                         }
@@ -1474,7 +1487,7 @@ private fun NavigationScreen(
 
                     if (!followingLocation) {
                         Button(onClick = onRecenter, modifier = Modifier.fillMaxWidth()) {
-                            Text("RECENTER · FOLLOW ME", fontWeight = FontWeight.Bold)
+                            Text("⌖ RECENTER MAP", fontWeight = FontWeight.Bold)
                         }
                     }
                     Text(
