@@ -3,6 +3,7 @@ package com.example.gps
 import com.example.gps.laneengine.NavigationFixQuality
 import android.animation.ValueAnimator
 import android.view.animation.LinearInterpolator
+import android.view.View
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.ui.geometry.Offset
@@ -70,6 +71,15 @@ import com.example.gps.route.DestinationStore
 import com.example.gps.route.NavigationVoiceController
 import com.example.gps.route.OpenRouteClient
 import com.example.gps.route.PhotonSearchClient
+import com.google.android.gms.maps.GoogleMap
+import com.google.android.gms.maps.MapView as GoogleMapView
+import com.google.android.gms.maps.CameraUpdateFactory as GoogleCameraUpdateFactory
+import com.google.android.gms.maps.model.CameraPosition as GoogleCameraPosition
+import com.google.android.gms.maps.model.LatLng as GoogleLatLng
+import com.google.android.gms.maps.model.Circle
+import com.google.android.gms.maps.model.CircleOptions
+import com.google.android.gms.maps.model.Polyline
+import com.google.android.gms.maps.model.PolylineOptions
 import org.json.JSONArray
 import org.json.JSONObject
 import org.maplibre.android.MapLibre
@@ -153,9 +163,18 @@ class NavigationActivity : ComponentActivity() {
     private val routeClient = OpenRouteClient()
     private val routeExecutor = Executors.newSingleThreadExecutor()
 
-    private lateinit var mapView: MapView
-    private var trafficStatus by mutableStateOf("Traffic · Google preview in Options")
+    private lateinit var mapView: View
+    private var mapLibreView: MapView? = null
+    private var googleMapView: GoogleMapView? = null
+    private var useGoogleMap = false
+    private var trafficStatus by mutableStateOf("Traffic · Google key needed · fallback map")
     private var map: MapLibreMap? = null
+    private var googleMap: GoogleMap? = null
+    private var googleRouteLine: Polyline? = null
+    private var googleDestination: Circle? = null
+    private var googlePosition: Circle? = null
+    private var googleRenderedGeometry: List<OpenRouteClient.RoutePoint>? = null
+    private var googleRenderedPosition: GoogleLatLng? = null
     private var mapStyleReady = false
     private var lastMapFixTimestamp: Long? = null
     private var renderedGeometry: List<OpenRouteClient.RoutePoint>? = null
@@ -247,39 +266,7 @@ class NavigationActivity : ComponentActivity() {
         DriveSessionRuntime.addListener(runtimeListener)
         if (recovered != null) logRouteEvent("ROUTE_RECOVERED")
 
-        MapLibre.getInstance(this)
-        mapView = MapView(this)
-        mapView.onCreate(savedInstanceState)
-        ViewCompat.setOnApplyWindowInsetsListener(mapView) { _, insets ->
-            positionMapControls(insets)
-            insets
-        }
-        mapView.getMapAsync { readyMap ->
-            map = readyMap
-            readyMap.addOnCameraMoveStartedListener { reason ->
-                if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
-                    followingLocation = false
-                    followAnimator?.cancel()
-                }
-            }
-            readyMap.uiSettings.isCompassEnabled = true
-            positionMapControls(ViewCompat.getRootWindowInsets(mapView))
-            ViewCompat.requestApplyInsets(mapView)
-            readyMap.uiSettings.isLogoEnabled = true
-            readyMap.uiSettings.isAttributionEnabled = true
-            readyMap.uiSettings.isRotateGesturesEnabled = true
-            readyMap.uiSettings.isTiltGesturesEnabled = true
-            // Keep attribution above the floating bottom controls.
-            val density = resources.displayMetrics.density
-            readyMap.uiSettings.setAttributionMargins((8 * density).toInt(), 0, 0, (196 * density).toInt())
-            readyMap.uiSettings.setLogoMargins((8 * density).toInt(), 0, 0, (220 * density).toInt())
-            readyMap.setStyle(MAP_STYLE_URI) { style ->
-                installNavigationLayers(style)
-                mapStyleReady = true
-                routeLayersInitialized = false
-                updateMapFromState(uiState, routeUi.summary, forceCamera = true)
-            }
-        }
+        initializeDrivingMap(savedInstanceState)
 
         setContent {
             MaterialTheme(
@@ -352,7 +339,7 @@ class NavigationActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        mapView.onStart()
+        mapOnStart()
         uiState = DriveSessionRuntime.latest() ?: store.load()
         sessionActive = store.isActive()
         recordingActive = store.isRecording()
@@ -371,7 +358,7 @@ class NavigationActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         activityResumed = true
-        mapView.onResume()
+        mapOnResume()
         mapResumed = true
         maybeOpenKeylessStreetView(routeUi.summary)
         updateMapFromState(uiState, routeUi.summary, forceCamera = true)
@@ -381,7 +368,7 @@ class NavigationActivity : ComponentActivity() {
         activityResumed = false
         mapResumed = false
         followAnimator?.cancel()
-        mapView.onPause()
+        mapOnPause()
         super.onPause()
     }
 
@@ -396,9 +383,123 @@ class NavigationActivity : ComponentActivity() {
         // Keep the runtime listener attached while a route is backgrounded so
         // route progress, maneuver distance and reroute state do not freeze
         // when the screen turns off or another app covers LaneGPS.
-        mapView.onStop()
+        mapOnStop()
         if (!isChangingConfigurations) liveViewStoppedByUser = false
         super.onStop()
+    }
+
+
+    private fun initializeDrivingMap(savedInstanceState: Bundle?) {
+        useGoogleMap = GoogleTrafficActivity.isConfigured(this)
+        if (useGoogleMap) {
+            val view = GoogleMapView(this)
+            googleMapView = view
+            mapView = view
+            view.onCreate(savedInstanceState)
+            ViewCompat.setOnApplyWindowInsetsListener(view) { _, insets ->
+                positionGoogleMapControls(insets)
+                insets
+            }
+            view.getMapAsync { readyMap ->
+                googleMap = readyMap
+                readyMap.mapType = GoogleMap.MAP_TYPE_NORMAL
+                readyMap.isTrafficEnabled = true
+                readyMap.uiSettings.isCompassEnabled = true
+                readyMap.uiSettings.isRotateGesturesEnabled = true
+                readyMap.uiSettings.isTiltGesturesEnabled = true
+                readyMap.uiSettings.isZoomControlsEnabled = false
+                readyMap.setOnCameraMoveStartedListener { reason ->
+                    if (reason == GoogleMap.OnCameraMoveStartedListener.REASON_GESTURE) {
+                        followingLocation = false
+                        followAnimator?.cancel()
+                    }
+                }
+                trafficStatus = "Traffic on · Google"
+                mapStyleReady = true
+                positionGoogleMapControls(ViewCompat.getRootWindowInsets(view))
+                ViewCompat.requestApplyInsets(view)
+                updateMapFromState(uiState, routeUi.summary, forceCamera = true)
+            }
+            return
+        }
+
+        MapLibre.getInstance(this)
+        val view = MapView(this)
+        mapLibreView = view
+        mapView = view
+        view.onCreate(savedInstanceState)
+        ViewCompat.setOnApplyWindowInsetsListener(view) { _, insets ->
+            positionMapControls(insets)
+            insets
+        }
+        view.getMapAsync { readyMap ->
+            map = readyMap
+            readyMap.addOnCameraMoveStartedListener { reason ->
+                if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
+                    followingLocation = false
+                    followAnimator?.cancel()
+                }
+            }
+            readyMap.uiSettings.isCompassEnabled = true
+            positionMapControls(ViewCompat.getRootWindowInsets(view))
+            ViewCompat.requestApplyInsets(view)
+            readyMap.uiSettings.isLogoEnabled = true
+            readyMap.uiSettings.isAttributionEnabled = true
+            readyMap.uiSettings.isRotateGesturesEnabled = true
+            readyMap.uiSettings.isTiltGesturesEnabled = true
+            val density = resources.displayMetrics.density
+            readyMap.uiSettings.setAttributionMargins((8 * density).toInt(), 0, 0, (196 * density).toInt())
+            readyMap.uiSettings.setLogoMargins((8 * density).toInt(), 0, 0, (220 * density).toInt())
+            readyMap.setStyle(MAP_STYLE_URI) { style ->
+                installNavigationLayers(style)
+                trafficStatus = "Traffic · Google key needed · fallback map"
+                mapStyleReady = true
+                routeLayersInitialized = false
+                updateMapFromState(uiState, routeUi.summary, forceCamera = true)
+            }
+        }
+    }
+
+    private fun mapOnStart() {
+        if (useGoogleMap) googleMapView?.onStart() else mapLibreView?.onStart()
+    }
+
+    private fun mapOnResume() {
+        if (useGoogleMap) googleMapView?.onResume() else mapLibreView?.onResume()
+    }
+
+    private fun mapOnPause() {
+        if (useGoogleMap) googleMapView?.onPause() else mapLibreView?.onPause()
+    }
+
+    private fun mapOnStop() {
+        if (useGoogleMap) googleMapView?.onStop() else mapLibreView?.onStop()
+    }
+
+    private fun mapOnLowMemory() {
+        if (useGoogleMap) googleMapView?.onLowMemory() else mapLibreView?.onLowMemory()
+    }
+
+    private fun mapOnSaveInstanceState(outState: Bundle) {
+        if (useGoogleMap) googleMapView?.onSaveInstanceState(outState)
+        else mapLibreView?.onSaveInstanceState(outState)
+    }
+
+    private fun mapOnDestroy() {
+        if (useGoogleMap) googleMapView?.onDestroy() else mapLibreView?.onDestroy()
+    }
+
+    private fun positionGoogleMapControls(insets: WindowInsetsCompat?) {
+        val safe = insets?.getInsets(
+            WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout(),
+        )
+        val density = resources.displayMetrics.density
+        googleMap?.setPadding(
+            (safe?.left ?: 0) + (8 * density).toInt(),
+            (safe?.top ?: 0) + (8 * density).toInt(),
+            (safe?.right ?: 0) + (8 * density).toInt(),
+            (safe?.bottom ?: 0) + (196 * density).toInt(),
+        )
     }
 
     private fun positionMapControls(insets: WindowInsetsCompat?) {
@@ -416,7 +517,7 @@ class NavigationActivity : ComponentActivity() {
 
     override fun onLowMemory() {
         super.onLowMemory()
-        mapView.onLowMemory()
+        mapOnLowMemory()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -424,7 +525,7 @@ class NavigationActivity : ComponentActivity() {
         outState.putBoolean("following_location", followingLocation)
         outState.putBoolean("live_view_stopped", liveViewStoppedByUser)
         outState.putBoolean("location_prompted", locationPromptedThisVisit)
-        mapView.onSaveInstanceState(outState)
+        mapOnSaveInstanceState(outState)
     }
 
     override fun onDestroy() {
@@ -432,7 +533,7 @@ class NavigationActivity : ComponentActivity() {
         DriveSessionRuntime.removeListener(runtimeListener)
         routeExecutor.shutdownNow()
         voiceController.shutdown()
-        mapView.onDestroy()
+        mapOnDestroy()
         super.onDestroy()
     }
 
@@ -806,6 +907,10 @@ class NavigationActivity : ComponentActivity() {
         forceCamera: Boolean = false,
     ) {
         if (!mapStyleReady) return
+        if (useGoogleMap) {
+            updateGoogleMapFromState(state, route, forceCamera)
+            return
+        }
         val style = map?.style ?: return
 
         // Progress copies retain geometry identity. Upload only on plan/reroute/clear,
@@ -886,6 +991,91 @@ class NavigationActivity : ComponentActivity() {
                     .build()))
             }
             start()
+        }
+    }
+
+
+    private fun updateGoogleMapFromState(
+        state: GnssUiState,
+        route: OpenRouteClient.RouteSummary?,
+        forceCamera: Boolean = false,
+    ) {
+        val readyMap = googleMap ?: return
+
+        if (googleRenderedGeometry !== route?.geometry) {
+            googleRouteLine?.remove()
+            googleDestination?.remove()
+            googleRouteLine = route?.geometry?.takeIf { it.size >= 2 }?.let { points ->
+                readyMap.addPolyline(
+                    PolylineOptions()
+                        .addAll(points.map { GoogleLatLng(it.lat, it.lon) })
+                        .width(14f)
+                        .color(android.graphics.Color.rgb(91, 168, 255))
+                        .zIndex(5f)
+                )
+            }
+            googleDestination = route?.let {
+                readyMap.addCircle(
+                    CircleOptions()
+                        .center(GoogleLatLng(it.destinationLat, it.destinationLon))
+                        .radius(11.0)
+                        .fillColor(android.graphics.Color.rgb(91, 168, 255))
+                        .strokeColor(android.graphics.Color.WHITE)
+                        .strokeWidth(4f)
+                        .zIndex(7f)
+                )
+            }
+            googleRenderedGeometry = route?.geometry
+        }
+
+        if (!freshLocation(state)) {
+            followAnimator?.cancel()
+            googleRenderedPosition = null
+            googlePosition?.remove()
+            googlePosition = null
+            return
+        }
+        if (!mapResumed) return
+        val timestamp = state.lastUpdateMillis ?: return
+        if (!forceCamera && timestamp == lastMapFixTimestamp) return
+        lastMapFixTimestamp = timestamp
+
+        val raw = LatLng(state.latitude!!, state.longitude!!)
+        val snapped = route?.let { snapDisplayPointToRoute(raw, state.accuracyMeters, it) } ?: raw
+        val target = GoogleLatLng(snapped.latitude, snapped.longitude)
+        if (googlePosition == null) {
+            googlePosition = readyMap.addCircle(
+                CircleOptions()
+                    .center(target)
+                    .radius(8.5)
+                    .fillColor(android.graphics.Color.rgb(87, 211, 125))
+                    .strokeColor(android.graphics.Color.WHITE)
+                    .strokeWidth(4f)
+                    .zIndex(10f)
+            )
+        } else {
+            googlePosition?.center = target
+        }
+        googleRenderedPosition = target
+
+        if (!followingLocation) return
+
+        val moving = (state.speedMps ?: 0f) >= 1.5f
+        val previousCamera = readyMap.cameraPosition
+        val heading = if (moving) {
+            (state.bearingDegrees ?: state.fusedHeadingDegrees)?.toFloat() ?: previousCamera.bearing
+        } else previousCamera.bearing
+        val destinationCamera = GoogleCameraPosition.Builder()
+            .target(target)
+            .zoom(if (moving) 17.3f else if (sessionActive) 16.9f else 16.2f)
+            .bearing(if (sessionActive || moving) heading else 0f)
+            .tilt(if (sessionActive) 58f else if (moving) 48f else 0f)
+            .build()
+        val update = GoogleCameraUpdateFactory.newCameraPosition(destinationCamera)
+        if (forceCamera || googleRenderedPosition == null) {
+            readyMap.moveCamera(update)
+        } else {
+            readyMap.animateCamera(update, 650, null)
         }
     }
 
@@ -1001,7 +1191,7 @@ private fun NavigationScreen(
     onRecenter: () -> Unit,
     query: String,
     routeUi: NavigationRouteUi,
-    mapView: MapView,
+    mapView: View,
     onQueryChange: (String) -> Unit,
     onQuickRoute: (String) -> Unit,
     onClearRoute: () -> Unit,
@@ -2709,8 +2899,8 @@ private fun TrafficOptions(onChanged: () -> Unit) {
             fontSize = 13.sp,
         )
         Text(
-            if (configured) "Google Maps is configured for this build."
-            else "Google Maps key not configured in this build yet. The current driving map remains active until the Google cutover is ready.",
+            if (configured) "Google Maps + live traffic are active on the LaneGPS driving screen."
+            else "Google Maps key is not configured in this build yet. LaneGPS is safely using the fallback map.",
             color = if (configured) NavGreen else NavAmber,
             fontSize = 12.sp,
         )
@@ -2725,7 +2915,7 @@ private fun TrafficOptions(onChanged: () -> Unit) {
             Text("OPEN GOOGLE TRAFFIC PREVIEW")
         }
         Text(
-            "The preview uses Google's built-in live traffic layer. Routing and LaneGPS lane logic are still unchanged during this migration stage.",
+            "Google supplies the road map and live traffic layer. LaneGPS still owns the lane HUD, GNSS logic, voice, telemetry, and navigation controls.",
             color = NavMuted,
             fontSize = 12.sp,
         )
