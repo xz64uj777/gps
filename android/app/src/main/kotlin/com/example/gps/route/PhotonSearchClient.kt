@@ -56,32 +56,32 @@ class PhotonSearchClient {
             if (looksLikeConnecticutPlaceQuery(q)) add("$q, Connecticut")
         }.distinct()
 
+        val serviceLimit = (cappedLimit * 2).coerceIn(8, 12)
         val combined = mutableListOf<Suggestion>()
         queryVariants.forEach { variant ->
-            if (combined.size < cappedLimit) {
-                combined += searchPhoton(
-                    query = variant,
-                    biasLat = effectiveBiasLat,
-                    biasLon = effectiveBiasLon,
-                    limit = cappedLimit,
-                )
-            }
+            combined += searchPhoton(
+                query = variant,
+                biasLat = effectiveBiasLat,
+                biasLon = effectiveBiasLon,
+                limit = serviceLimit,
+            )
+            // Always consult the independent OSM geocoder. Previously a full page
+            // of Photon results from the wrong town prevented this fallback from
+            // running at all.
+            combined += searchNominatim(
+                query = variant,
+                biasLat = effectiveBiasLat,
+                biasLon = effectiveBiasLon,
+                limit = serviceLimit,
+            )
         }
 
-        if (combined.distinctSuggestions().size < cappedLimit) {
-            queryVariants.forEach { variant ->
-                if (combined.distinctSuggestions().size < cappedLimit) {
-                    combined += searchNominatim(
-                        query = variant,
-                        biasLat = effectiveBiasLat,
-                        biasLon = effectiveBiasLon,
-                        limit = cappedLimit,
-                    )
-                }
-            }
-        }
-
-        val suggestions = combined.distinctSuggestions().take(cappedLimit)
+        val suggestions = rankSuggestions(
+            query = q,
+            suggestions = combined.distinctSuggestions(),
+            biasLat = effectiveBiasLat,
+            biasLon = effectiveBiasLon,
+        ).take(cappedLimit)
         DestinationSuggestionRuntime.remember(suggestions)
         return suggestions
     }
@@ -194,6 +194,54 @@ class PhotonSearchClient {
             connection.disconnect()
         }
     }
+
+    internal fun rankSuggestions(
+        query: String,
+        suggestions: List<Suggestion>,
+        biasLat: Double?,
+        biasLon: Double?,
+    ): List<Suggestion> {
+        val normalizedQuery = normalizeSearchText(query)
+        val queryTokens = normalizedQuery.split(' ').filter { it.length >= 2 }
+
+        fun textRank(suggestion: Suggestion): Int {
+            val label = normalizeSearchText(suggestion.label)
+            val full = normalizeSearchText(suggestion.fullLabel())
+            return when {
+                label == normalizedQuery -> 0
+                label.startsWith(normalizedQuery) -> 1
+                full.startsWith(normalizedQuery) -> 2
+                full.contains(normalizedQuery) -> 3
+                queryTokens.isNotEmpty() && queryTokens.all { it in full } -> 4
+                queryTokens.isNotEmpty() && queryTokens.count { it in full } >=
+                    (queryTokens.size + 1) / 2 -> 5
+                else -> 6
+            }
+        }
+
+        fun distanceMeters(suggestion: Suggestion): Double {
+            if (biasLat == null || biasLon == null) return Double.POSITIVE_INFINITY
+            val earth = 6_371_000.0
+            val lat1 = Math.toRadians(biasLat)
+            val lat2 = Math.toRadians(suggestion.lat)
+            val dLat = lat2 - lat1
+            val dLon = Math.toRadians(suggestion.lon - biasLon)
+            val a = kotlin.math.sin(dLat / 2) * kotlin.math.sin(dLat / 2) +
+                kotlin.math.cos(lat1) * kotlin.math.cos(lat2) *
+                kotlin.math.sin(dLon / 2) * kotlin.math.sin(dLon / 2)
+            return earth * 2 * kotlin.math.atan2(kotlin.math.sqrt(a), kotlin.math.sqrt(1 - a))
+        }
+
+        return suggestions.sortedWith(
+            compareBy<Suggestion>({ textRank(it) }, { distanceMeters(it) }, { it.fullLabel().length })
+        )
+    }
+
+    private fun normalizeSearchText(value: String): String =
+        value.lowercase(Locale.US)
+            .replace(Regex("[^a-z0-9]+"), " ")
+            .trim()
+            .replace(Regex("\\s+"), " ")
 
     private fun open(url: URL, accept: String): HttpURLConnection =
         (url.openConnection() as HttpURLConnection).apply {
