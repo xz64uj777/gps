@@ -517,15 +517,19 @@ class NavigationActivity : ComponentActivity() {
         }
 
         val accuracyGoodEnough = (state.accuracyMeters ?: 999f) <= 25f
-        val moving = (state.speedMps ?: 0f) >= 2f
-        if (progressed.offRouteDistanceMeters > OFF_ROUTE_REROUTE_METERS && accuracyGoodEnough && moving) {
+        val speedMps = (state.speedMps ?: 0f).toDouble()
+        val moving = speedMps >= 2.0
+        val rerouteDistance = com.example.gps.route.ReroutePolicy.distanceThresholdMeters(speedMps)
+        val rerouteFixes = com.example.gps.route.ReroutePolicy.fixesRequired(speedMps)
+        val rerouteCooldown = com.example.gps.route.ReroutePolicy.cooldownMillis(speedMps)
+        if (progressed.offRouteDistanceMeters > rerouteDistance && accuracyGoodEnough && moving) {
             offRouteFixStreak++
         } else {
             offRouteFixStreak = 0
         }
 
         val now = SystemClock.elapsedRealtime()
-        if (offRouteFixStreak >= OFF_ROUTE_FIXES_REQUIRED && now - lastRerouteElapsed >= REROUTE_COOLDOWN_MS) {
+        if (offRouteFixStreak >= rerouteFixes && now - lastRerouteElapsed >= rerouteCooldown) {
             offRouteFixStreak = 0
             lastRerouteElapsed = now
             reroute(progressed, state.latitude!!, state.longitude!!)
@@ -983,9 +987,6 @@ class NavigationActivity : ComponentActivity() {
         const val POSITION_LAYER_ID = "lanegps-position-layer"
         const val DESTINATION_SOURCE_ID = "lanegps-destination-source"
         const val DESTINATION_LAYER_ID = "lanegps-destination-layer"
-        const val OFF_ROUTE_REROUTE_METERS = 75.0
-        const val OFF_ROUTE_FIXES_REQUIRED = 5
-        const val REROUTE_COOLDOWN_MS = 30_000L
     }
 }
 
