@@ -212,15 +212,12 @@ class PhotonSearchClient {
         biasLon: Double,
         limit: Int,
     ): List<Suggestion> {
-        val safeName = Regex.escape(name)
-        val query = """
-            [out:json][timeout:7];
-            (
-              nwr(around:40000,$biasLat,$biasLon)["name"~"^$safeName$",i];
-              nwr(around:40000,$biasLat,$biasLon)["brand"~"^$safeName$",i];
-            );
-            out center tags ${limit.coerceIn(5, 20)};
-        """.trimIndent()
+        val query = buildOverpassPoiQuery(
+            name = name,
+            biasLat = biasLat,
+            biasLon = biasLon,
+            limit = limit,
+        )
         val encoded = URLEncoder.encode(query, StandardCharsets.UTF_8.name())
         val connection = open(
             URL("https://overpass-api.de/api/interpreter?data=$encoded"),
@@ -270,6 +267,26 @@ class PhotonSearchClient {
         } finally {
             connection.disconnect()
         }
+    }
+
+    internal fun buildOverpassPoiQuery(
+        name: String,
+        biasLat: Double,
+        biasLon: Double,
+        limit: Int,
+    ): String {
+        val safe = name
+            .replace("\\", "\\\\")
+            .replace(""", "\\"")
+            .trim()
+        return """
+            [out:json][timeout:8];
+            (
+              nwr(around:50000,$biasLat,$biasLon)["name"="$safe"];
+              nwr(around:50000,$biasLat,$biasLon)["brand"="$safe"];
+            );
+            out center tags ${limit.coerceIn(5, 20)};
+        """.trimIndent()
     }
 
     internal fun looksLikePoiQuery(query: String): Boolean {
