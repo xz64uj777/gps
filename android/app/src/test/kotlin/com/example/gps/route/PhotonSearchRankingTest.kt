@@ -33,4 +33,17 @@ class PhotonSearchRankingTest {
         )
         assertEquals("City Fish Market", results.first().label)
     }
+    @Test
+    fun businessQueryUsesNearbyPoiFallback() {
+        assertEquals(true, client.looksLikePoiQuery("Burger King Wethersfield"))
+        assertEquals(true, client.looksLikePoiQuery("City Fish Market"))
+        assertEquals(false, client.looksLikePoiQuery("872 Silas Deane Hwy"))
+        assertEquals(false, client.looksLikePoiQuery("Park St Hartford"))
+    }
+
+    @Test
+    fun localitySuffixIsRemovedForNearbyPoiLookup() {
+        val names = client.nearbyPoiNames("Burger King Wethersfield")
+        assertEquals("Burger King", names.first())
+    }
 }
