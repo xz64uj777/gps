@@ -76,6 +76,17 @@ class PhotonSearchClient {
             )
         }
 
+        if (effectiveBiasLat != null && effectiveBiasLon != null && looksLikePoiQuery(q)) {
+            nearbyPoiNames(q).forEach { poiName ->
+                combined += searchOverpassNearby(
+                    name = poiName,
+                    biasLat = effectiveBiasLat,
+                    biasLon = effectiveBiasLon,
+                    limit = serviceLimit,
+                )
+            }
+        }
+
         val suggestions = rankSuggestions(
             query = q,
             suggestions = combined.distinctSuggestions(),
@@ -195,6 +206,99 @@ class PhotonSearchClient {
         }
     }
 
+    private fun searchOverpassNearby(
+        name: String,
+        biasLat: Double,
+        biasLon: Double,
+        limit: Int,
+    ): List<Suggestion> {
+        val safeName = Regex.escape(name)
+        val query = """
+            [out:json][timeout:7];
+            (
+              nwr(around:40000,$biasLat,$biasLon)["name"~"^$safeName$",i];
+              nwr(around:40000,$biasLat,$biasLon)["brand"~"^$safeName$",i];
+            );
+            out center tags ${limit.coerceIn(5, 20)};
+        """.trimIndent()
+        val encoded = URLEncoder.encode(query, StandardCharsets.UTF_8.name())
+        val connection = open(
+            URL("https://overpass-api.de/api/interpreter?data=$encoded"),
+            "application/json",
+        )
+        try {
+            if (connection.responseCode !in 200..299) return emptyList()
+            val body = connection.inputStream.bufferedReader().use { it.readText() }
+            val elements = JSONObject(body).optJSONArray("elements") ?: return emptyList()
+            return buildList {
+                for (index in 0 until elements.length()) {
+                    val element = elements.optJSONObject(index) ?: continue
+                    val tags = element.optJSONObject("tags") ?: JSONObject()
+                    val center = element.optJSONObject("center")
+                    val lat = when {
+                        element.has("lat") -> element.optDouble("lat", Double.NaN)
+                        center != null -> center.optDouble("lat", Double.NaN)
+                        else -> Double.NaN
+                    }
+                    val lon = when {
+                        element.has("lon") -> element.optDouble("lon", Double.NaN)
+                        center != null -> center.optDouble("lon", Double.NaN)
+                        else -> Double.NaN
+                    }
+                    if (!lat.isFinite() || !lon.isFinite()) continue
+                    val label = tags.optString("name")
+                        .ifBlank { tags.optString("brand") }
+                        .ifBlank { name }
+                        .trim()
+                    val street = tags.optString("addr:street").trim()
+                    val house = tags.optString("addr:housenumber").trim()
+                    val city = tags.optString("addr:city")
+                        .ifBlank { tags.optString("addr:town") }
+                        .ifBlank { tags.optString("addr:village") }
+                        .trim()
+                    val subtitle = listOf(
+                        listOf(house, street).filter { it.isNotBlank() }.joinToString(" "),
+                        city,
+                        tags.optString("addr:state").trim(),
+                        tags.optString("addr:postcode").trim(),
+                    ).filter { it.isNotBlank() }.distinct().joinToString(", ")
+                    add(Suggestion(label, subtitle, lat, lon))
+                }
+            }
+        } catch (_: Exception) {
+            return emptyList()
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    internal fun looksLikePoiQuery(query: String): Boolean {
+        val clean = normalizeSearchText(query)
+        if (clean.length < 5 || Regex("\\d").containsMatchIn(clean)) return false
+        val tokens = clean.split(' ').filter { it.isNotBlank() }
+        if (tokens.isEmpty() || tokens.size > 7) return false
+        val addressWords = setOf(
+            "street", "st", "road", "rd", "avenue", "ave", "boulevard", "blvd",
+            "drive", "dr", "lane", "ln", "route", "highway", "hwy", "turnpike",
+        )
+        return tokens.none { it in addressWords }
+    }
+
+    internal fun nearbyPoiNames(query: String): List<String> {
+        val clean = query.trim().replace(Regex("\\s+"), " ")
+        val lower = clean.lowercase(Locale.US)
+        val names = linkedSetOf(clean)
+        CONNECTICUT_CITY_HINTS
+            .sortedByDescending { it.length }
+            .firstOrNull { city ->
+                lower == city || lower.endsWith(" $city") || lower.endsWith(", $city")
+            }
+            ?.let { city ->
+                val stripped = clean.dropLast(city.length).trim().trimEnd(',').trim()
+                if (stripped.length >= 3) names.add(stripped)
+            }
+        return names.toList().takeLast(2).reversed()
+    }
     internal fun rankSuggestions(
         query: String,
         suggestions: List<Suggestion>,
@@ -300,6 +404,8 @@ class PhotonSearchClient {
             "hartford", "west hartford", "east hartford", "new haven", "bridgeport",
             "stamford", "waterbury", "norwalk", "danbury", "new britain", "meriden",
             "bristol", "manchester", "middletown", "milford", "southington", "enfield",
+            "wethersfield", "newington", "rocky hill", "glastonbury", "cromwell", "berlin",
+            "windsor", "south windsor", "east windsor", "west haven", "east haven", "cheshire",
         )
     }
 }
