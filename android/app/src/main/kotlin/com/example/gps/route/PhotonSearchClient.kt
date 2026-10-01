@@ -277,7 +277,7 @@ class PhotonSearchClient {
     ): String {
         val safe = name
             .replace("\\", "\\\\")
-            .replace(""", "\\"")
+            .replace("\"", "\\\"")
             .trim()
         return """
             [out:json][timeout:8];
