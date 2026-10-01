@@ -46,4 +46,17 @@ class PhotonSearchRankingTest {
         val names = client.nearbyPoiNames("Burger King Wethersfield")
         assertEquals("Burger King", names.first())
     }
+    @Test
+    fun overpassBusinessQueryUsesExactOsmTags() {
+        val query = client.buildOverpassPoiQuery(
+            name = "Burger King",
+            biasLat = 41.70,
+            biasLon = -72.66,
+            limit = 10,
+        )
+        assertEquals(true, query.contains("[\"name\"=\"Burger King\"]"))
+        assertEquals(true, query.contains("[\"brand\"=\"Burger King\"]"))
+        assertEquals(false, query.contains("\\Q"))
+        assertEquals(false, query.contains("\\E"))
+    }
 }
