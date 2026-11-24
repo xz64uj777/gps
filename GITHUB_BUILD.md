@@ -18,3 +18,7 @@ Main-branch builds cache one development-only Android debug signing key and reus
 Because APKs built before this change were signed with temporary runner keys, testers must uninstall the older build once before installing the first APK produced by this new workflow. After that one-time transition, later main-branch APKs should update in place.
 
 This cached key is only for development/testing. A production or Play Store release must use a separate private release key stored as a GitHub secret or another secure signing service.
+
+## APK recovery build
+
+A fresh main-branch build was requested on 2026-11-24 to regenerate the expired development APK. Download the new artifact from GitHub Actions after the build succeeds.
